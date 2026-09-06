@@ -1,0 +1,22 @@
+{
+  "name": "harness-mvp",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "smoke:llm": "node --import tsx scripts/llm-smoke.ts",
+    "smoke:agent": "node --import tsx scripts/agent-smoke.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.87.1",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1"
+  }
+}
