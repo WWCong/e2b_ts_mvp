@@ -1,5 +1,6 @@
 /**
  * fs 插件：工作区里的文件原语。工作区目录取环境变量 WORKSPACE_DIR（缺省 ./workspace）。
+ * 写文件要人审批（ui_approval），所以装 fs 时也要装 ui 与 stdlib。
  * 后续加入：fs_delete；工作区目录改由 setup(config) 给出。
  */
 
@@ -22,7 +23,8 @@ export const write = op({
   usage: "把内容写入工作区里的文件：文件已存在则覆盖，目录不存在则自动创建",
   public: true,
   input: z.object({ path: relPath, content: z.string().describe("要写入的完整内容") }),
-  decorators: ["fs_pathGuard"],
+  // 先查路径再问人：越出工作区的写不必打扰人
+  decorators: ["fs_pathGuard", "ui_approval"],
   impl: async (ctx, input) => {
     const file = inWorkspace(input.path);
     await mkdir(dirname(file), { recursive: true });

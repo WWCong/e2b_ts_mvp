@@ -13,11 +13,14 @@ beforeEach(async () => {
   process.env.WORKSPACE_DIR = workspace;
 });
 
+/** fs_write 要审批：装上 ui 与 stdlib，审批一律答 yes */
 async function setup() {
   const kernel = new Kernel();
   const events: HarnessEvent[] = [];
   kernel.events.subscribe((e) => events.push(e));
-  await loadPlugin(kernel, import.meta.dir);
+  kernel.events.subscribe((e) => e.type === "park.opened" && queueMicrotask(() => kernel.unpark(e.runId, "yes")));
+  await loadPlugin(kernel, join(import.meta.dir, "..", "..", "..", "src", "plugins", "stdlib"));
+  for (const pkg of ["fs", "ui"]) await loadPlugin(kernel, join(import.meta.dir, "..", pkg));
   const run = (name: string, input: unknown) => kernel.reap(kernel.start(name, input));
   return { events, run };
 }
@@ -42,7 +45,7 @@ describe("fs 插件", () => {
     });
   });
 
-  test("pathGuard：越出工作区的路径被拒绝，可改了再试，实现不执行", async () => {
+  test("pathGuard：越出工作区的路径被拒绝，可改了再试，实现不执行，也不去问人", async () => {
     const { events, run } = await setup();
 
     for (const path of ["../outside.md", "/etc/passwd", "notes/../../outside.md"]) {
@@ -55,6 +58,7 @@ describe("fs 插件", () => {
     }
     expect(await readdir(workspace)).toEqual([]);
     expect(events.filter((e) => e.type === "decorator.rejected")).toHaveLength(3);
+    expect(events.some((e) => e.type === "park.opened")).toBe(false);
   });
 
   test("pathGuard 只看字面上是否越界：以 .. 开头的普通文件名照常放行", async () => {

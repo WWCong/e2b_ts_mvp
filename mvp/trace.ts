@@ -37,8 +37,12 @@ function line(depth: number, text: string): void {
   console.log(`${"  ".repeat(depth)}${text}`);
 }
 
-/** 一行摘要。model_complete 的入参与出参太长，只取要点：几条消息几个工具，模型要调谁或回答了什么 */
+/**
+ * 一行摘要。model_complete 的入参与出参太长，只取要点：几条消息几个工具，模型要调谁或回答了什么；
+ * stdlib_park 的入参只看 payload（要问的问题），不看 schema
+ */
 function brief(operation: string, side: "input" | "output", value: unknown): string {
+  if (operation === "stdlib_park" && side === "input") return short((value as { payload: unknown }).payload);
   if (operation === "model_complete") {
     if (side === "input") {
       const { messages, tools } = value as { messages: unknown[]; tools: unknown[] };

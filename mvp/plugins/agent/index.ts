@@ -10,7 +10,8 @@ import { z } from "zod";
 import { op } from "../../../src/kernel/harness";
 import type { Result } from "../../../src/kernel/run";
 
-const PERSONA = "你是工作区助手。需要查看或修改文件时使用工具；做完后用中文简要回答用户。";
+const PERSONA =
+  "你是工作区助手。需要查看或修改文件时使用工具；信息不够或有几种做法需要用户拍板时，用 ui_ask 问用户。做完后用中文简要回答用户。";
 const MAX_TURNS = 20;
 
 /** model_complete 的出参 */
@@ -18,7 +19,7 @@ type Reply = { message: AssistantMessage; calls: ToolCall[]; answer: string | nu
 
 export const assist = op({
   input: z.object({ prompt: z.string() }),
-  only: ["fs", "model"],
+  only: ["fs", "model", "ui"],
   impl: async (ctx, input) => {
     const tools = ctx.tools();
     const history: Message[] = [{ role: "user", content: input.prompt, timestamp: Date.now() }];
