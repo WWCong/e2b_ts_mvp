@@ -12,11 +12,13 @@ export type Result = { ok: true; value: unknown } | Rejected;
 
 /**
  * 内核交给实现与装饰器的句柄，绑定在一个 Run 上。
- * 后续加入：spawn、emit、signal（被取消时 abort，供原语中止 IO），以及 runId、depth、replaying 等只读信息。
+ * 后续加入：spawn、emit，以及 runId、depth、replaying 等只读信息。
  */
 export type Ctx = {
   /** 发起这个 Run 的子调用并等它返回；拒绝作为结果返回（5.3） */
   call(name: string, input: unknown): Promise<Result>;
+  /** Run 被取消时 abort。传给 fetch、子进程等支持它的 API，取消时 IO 当场中止 */
+  signal: AbortSignal;
 };
 
 /** 把异常或原因转成拒绝结果 */

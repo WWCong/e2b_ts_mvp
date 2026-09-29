@@ -45,6 +45,8 @@ type LiveRun = {
   children: Set<LiveRun>;
   /** Run 的结果：正常退出与被取消，谁先到算谁 */
   done: PromiseWithResolvers<Result>;
+  /** 被取消时 abort，即 ctx.signal */
+  abort: AbortController;
 };
 
 export class Kernel {
@@ -92,7 +94,7 @@ export class Kernel {
   /**
    * 对外接口·取消：取消一个在途 Run 及其子孙，返回是否取消了（已结束或不存在返回 false）。
    * 被取消的 Run 以内核的拒绝结果交给等它的一方：父 Run，或收割方。
-   * 后续加入：run.cancelling 责任链（或 ctx.signal），让插件在取消时收尾。
+   * 正在做 IO 的实现经 ctx.signal 得知取消。
    */
   cancel(runId: string): boolean {
     const live = this.lives.get(runId);
@@ -159,7 +161,13 @@ export class Kernel {
   }
 
   private execute({ run, op, chain }: Admitted, parent?: LiveRun): Promise<Result> {
-    const live: LiveRun = { run, parent, children: new Set(), done: Promise.withResolvers() };
+    const live: LiveRun = {
+      run,
+      parent,
+      children: new Set(),
+      done: Promise.withResolvers(),
+      abort: new AbortController(),
+    };
     this.lives.set(run.runId, live);
     parent?.children.add(live);
     transition(run, "running");
@@ -174,14 +182,15 @@ export class Kernel {
     });
 
     // 实现的调用查它自己的能力面；装饰器的调用同样记在这个 Run 名下，但不查它的能力面（4.1）
-    const ctx: Ctx = { call: (name, input) => this.callChild(live, name, input, op) };
-    const decoratorCtx: Ctx = { call: (name, input) => this.callChild(live, name, input) };
+    const { signal } = live.abort;
+    const ctx: Ctx = { call: (name, input) => this.callChild(live, name, input, op), signal };
+    const decoratorCtx: Ctx = { call: (name, input) => this.callChild(live, name, input), signal };
 
     const settle = async () => {
       const result = await runChain(decoratorCtx, run, chain, () => this.invoke(ctx, run, op), this.events);
       // 实现没等完的子调用，等它们都返回再退出，不留悬空的子 Run
       while (live.children.size > 0) await Promise.all([...live.children].map((c) => c.done.promise));
-      // 已被取消：JS 无法抢占，实现照样跑完，但结果作废
+      // 已被取消：不理会 ctx.signal 的实现照样跑完（JS 无法抢占），但结果作废
       if (run.status === "killed") return;
 
       transition(run, "exited");
@@ -193,10 +202,11 @@ export class Kernel {
     return live.done.promise;
   }
 
-  /** 取消 live 及其子孙：自己先转 killed，再取消子 Run；等它的一方拿到内核的拒绝结果 */
+  /** 取消 live 及其子孙：自己先转 killed 并 abort 它的 signal，再取消子 Run；等它的一方拿到内核的拒绝结果 */
   private kill(live: LiveRun): void {
     transition(live.run, "killed");
     this.events.emit({ type: "run.killed", runId: live.run.runId, operation: live.run.operation });
+    live.abort.abort();
     for (const child of [...live.children]) this.kill(child);
     this.forget(live);
     live.done.resolve(reject("kernel", "cancelled"));

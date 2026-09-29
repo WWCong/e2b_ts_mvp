@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { setTimeout } from "node:timers/promises";
 import { z } from "zod";
 import type { HarnessEvent } from "./events";
 import { Kernel } from "./kernel";
@@ -53,7 +54,30 @@ describe("取消", () => {
     expect(await kernel.reap(root)).toEqual({ ok: true, value: cancelled });
   });
 
-  test("已在跑的实现会跑完，但结果作废；之后它发起的调用以拒绝返回", async () => {
+  test("ctx.signal：取消时 abort，子孙的也一样；传给支持它的 API 就能当场中止 IO", async () => {
+    const { kernel } = setup();
+    let aborted: unknown;
+    kernel.register({ name: "demo.outer", input: z.null(), impl: (ctx) => ctx.call("demo.sleep", null) });
+    kernel.register({
+      name: "demo.sleep",
+      input: z.null(),
+      impl: async (ctx) => {
+        try {
+          await setTimeout(60_000, undefined, { signal: ctx.signal });
+        } catch (err) {
+          aborted = err;
+        }
+      },
+    });
+    const root = kernel.start("demo.outer", null);
+
+    kernel.cancel(root);
+    await Bun.sleep(1);
+    expect(aborted).toMatchObject({ name: "AbortError" });
+    expect(await kernel.reap(root)).toEqual(cancelled);
+  });
+
+  test("不理会 ctx.signal 的实现会跑完，但结果作废；之后它发起的调用以拒绝返回", async () => {
     const { kernel, events, gate } = setup();
     let late: unknown;
     kernel.register({
