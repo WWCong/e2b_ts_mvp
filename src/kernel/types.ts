@@ -12,9 +12,15 @@ export type JsonSchema = JsonObject | boolean;
 
 // ─── 名字 ────────────────────────────────────────────────────────────────
 
-/** `包名.函数名`，如 `fs.read`、`video-analysis.completionScore` */
+/** `包名.函数名`，如 `fs.read`、`video-analysis.completionScore`；包名里没有点 */
 export type OperationName = string;
 export type RunId = string;
+
+/** Operation 名或装饰器 id 所属的包 */
+export function packageOf(name: string): string {
+  const dot = name.indexOf(".");
+  return dot < 0 ? name : name.slice(0, dot);
+}
 
 /** Operation 由谁提供：内核或插件为 native，script 包为 script（3.1） */
 export type Form = "native" | "script";
@@ -231,6 +237,8 @@ export interface DecoratedRun extends RunView {
 export type OperationFn = (input: any) => Promise<unknown>;
 export type Next = () => Promise<Outcome>;
 export type DecoratorFn = (run: DecoratedRun, next: Next) => Promise<Outcome>;
+/** 通知处理器只读、不被等待；生命周期责任链上的处理器内核会等它走完（5.1） */
+export type HandlerFn = (event: any) => void | Promise<void>;
 
 // ─── 包清单（6.1、7.3）────────────────────────────────────────────────────
 

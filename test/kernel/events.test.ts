@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { EventBus, levelOf, snapshot, type AnyEvent } from "../../src/kernel/events.ts";
+import { EVENT_TYPES, EventBus, levelOf, type AnyEvent } from "../../src/kernel/events.ts";
 import { ok, rejection } from "../../src/kernel/types.ts";
 
 function bus(opts: { errors?: unknown[] } = {}) {
@@ -33,7 +33,7 @@ describe("信封", () => {
 
   test("与 Run 无关的事件不带 Run 字段；根 Run 不带 parentId", () => {
     const b = bus();
-    const e = b.emit("harness.stopping", { reason: "sigterm" });
+    const e = b.emit("harness.shutdown", { reason: "sigterm" });
     expect(Object.keys(e)).toEqual(["seq", "ts", "type", "level", "data"]);
     const root = b.emit("run.started", {}, { runId: "r1", rootId: "r1", parentId: null, operation: "a.b" });
     expect("parentId" in root).toBe(false);
@@ -79,45 +79,6 @@ describe("快照", () => {
     expect(() => {
       items[0]!.a = 2;
     }).toThrow(TypeError);
-  });
-
-  test("语义同 JSON.stringify", () => {
-    const value = {
-      keep: 1,
-      undef: undefined,
-      fn: () => 1,
-      nan: NaN,
-      inf: -Infinity,
-      date: new Date("2026-01-02T03:04:05.000Z"),
-      list: [undefined, () => 1, 2],
-      map: new Map([["a", 1]]),
-    };
-    expect(snapshot(value)).toEqual(JSON.parse(JSON.stringify(value)));
-  });
-
-  test("JSON.stringify 会抛的情况也不抛", () => {
-    const cyclic: Record<string, unknown> = { name: "a" };
-    cyclic.self = cyclic;
-    const shared = { x: 1 };
-    const value = {
-      big: 10n,
-      err: new TypeError("bad"),
-      cyclic,
-      twice: [shared, shared],
-      getter: Object.defineProperty({}, "boom", {
-        enumerable: true,
-        get() {
-          throw new Error("nope");
-        },
-      }),
-    };
-    expect(snapshot(value) as unknown).toEqual({
-      big: "10",
-      err: { name: "TypeError", message: "bad" },
-      cyclic: { name: "a", self: "[Circular]" },
-      twice: [{ x: 1 }, { x: 1 }],
-      getter: "[Unserializable: nope]",
-    });
   });
 });
 
@@ -239,4 +200,11 @@ describe("投递", () => {
     b.emit("run.killed", { reason: "cancelled" }, run);
     expect(reasons).toEqual(["cancelled"]);
   });
+});
+
+test("EVENT_TYPES 列出目录里的全部类型", () => {
+  expect(EVENT_TYPES).toContain("run.exited");
+  expect(EVENT_TYPES).toContain("harness.shutdown");
+  expect(EVENT_TYPES).not.toContain("harness.stopping");
+  expect(new Set(EVENT_TYPES).size).toBe(EVENT_TYPES.length);
 });

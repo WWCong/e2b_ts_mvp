@@ -15,6 +15,7 @@ import type {
   RunId,
   SpawnOrigin,
 } from "./types.ts";
+import { snapshot } from "./json.ts";
 
 // ─── 目录 ────────────────────────────────────────────────────────────────
 
@@ -60,7 +61,8 @@ export interface EventDataMap {
     disabled: OperationName[];
     kernel: KernelLimits;
   };
-  "harness.stopping": { reason: string };
+  /** 开始关停（9.2）；关停的责任链挂点叫 `harness.stopping`，这里避开同名 */
+  "harness.shutdown": { reason: string };
 
   /** [*] → init：带上 Run 出生时解析出的全部配置 */
   "run.created": {
@@ -119,9 +121,9 @@ export interface EventDataMap {
 
 export type EventType = keyof EventDataMap;
 
-const DEFAULT_LEVELS: Readonly<Record<EventType, EventLevel>> = {
+const DEFAULT_LEVELS: Readonly<Record<EventType, EventLevel>> = Object.freeze({
   "harness.started": "critical",
-  "harness.stopping": "critical",
+  "harness.shutdown": "critical",
   "run.created": "critical",
   "run.started": "critical",
   "run.waiting": "critical",
@@ -134,7 +136,10 @@ const DEFAULT_LEVELS: Readonly<Record<EventType, EventLevel>> = {
   "park.opened": "critical",
   "park.closed": "critical",
   emit: "observe",
-};
+});
+
+/** 全部事件类型；每一种都是一个通知挂点（5.1） */
+export const EVENT_TYPES: readonly EventType[] = Object.freeze(Object.keys(DEFAULT_LEVELS) as EventType[]);
 
 /** 级别由目录决定，发出方不能改：链上只有拒绝与改写是关键级，放行是观测级（9.2） */
 export function levelOf<T extends EventType>(type: T, data: EventDataMap[T]): EventLevel {
@@ -296,58 +301,4 @@ function accepts(filter: SubscribeFilter | undefined, event: AnyEvent): boolean 
   if (filter.levels && !filter.levels.includes(event.level)) return false;
   if (filter.types && !filter.types.includes(event.type)) return false;
   return true;
-}
-
-// ─── 快照 ────────────────────────────────────────────────────────────────
-
-/**
- * 取值在这一刻的 JSON 形态的深拷贝，并逐层冻结。
- * 事件缓冲后才投递，发出方之后改动原对象不能改变已发出的事实。
- *
- * 语义同 `JSON.stringify`：尊重 `toJSON`；对象里的 undefined、函数、symbol 省略，
- * 数组里的变为 null；非有限数变为 null。另外永不抛错：bigint 转字符串，
- * Error 取 name 与 message，环引用记为 "[Circular]"，抛错的 getter 或 toJSON 记为 "[Unserializable: …]"。
- */
-export function snapshot<T>(value: T): T {
-  return toJson(value, new Set()) as T;
-}
-
-function toJson(value: unknown, ancestors: Set<object>): Json {
-  switch (typeof value) {
-    case "string":
-    case "boolean":
-      return value;
-    case "number":
-      return Number.isFinite(value) ? value : null;
-    case "bigint":
-      return value.toString();
-    case "undefined":
-    case "function":
-    case "symbol":
-      return null;
-  }
-  if (value === null) return null;
-
-  const obj = value as object;
-  if (ancestors.has(obj)) return "[Circular]";
-  ancestors.add(obj);
-  try {
-    if (obj instanceof Error) return Object.freeze({ name: obj.name, message: obj.message });
-    if (typeof (obj as { toJSON?: unknown }).toJSON === "function") {
-      return toJson((obj as { toJSON(): unknown }).toJSON(), ancestors);
-    }
-    if (Array.isArray(obj)) return Object.freeze(obj.map((item) => toJson(item, ancestors))) as Json[];
-
-    const out: Record<string, Json> = {};
-    for (const [key, item] of Object.entries(obj)) {
-      if (item === undefined || typeof item === "function" || typeof item === "symbol") continue;
-      out[key] = toJson(item, ancestors);
-    }
-    return Object.freeze(out);
-  } catch (error) {
-    // 抛错的 getter 或 toJSON
-    return `[Unserializable: ${error instanceof Error ? error.message : String(error)}]`;
-  } finally {
-    ancestors.delete(obj);
-  }
 }
