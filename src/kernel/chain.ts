@@ -10,8 +10,15 @@ import { freeze, reject, type Result, type Run } from "./run";
 export type OnError = "open" | "closed";
 
 /**
- * next 之前：整体替换 run.input 改写入参，或不调 next 直接返回结果（拒绝，或如缓存那样给出结果）。
- * next 之后：返回另一个结果即改写。拒绝以结果返回，不抛异常。
+ * next() 执行内层（最终是实现）并返回它的结果，只能调一次；要用结果就存进变量。
+ *
+ *   放行          return next()
+ *   改入参        run.input = 新对象; return next()      （整体替换，不要原地修改）
+ *   改结果        const r = await next(); return 新结果
+ *   拒绝          不调 next，return { ok: false, by, reason, retryable }
+ *   直接给结果    不调 next，return { ok: true, value }   （如缓存）
+ *
+ * 拒绝以结果返回，不抛异常；抛异常按 onError 处理。
  * 后续加入：往 run.context 放条目；调 harness.park 挂起。
  */
 export type Decorator = (run: Run, next: () => Promise<Result>) => Promise<Result>;
