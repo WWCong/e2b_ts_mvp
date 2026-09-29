@@ -8,11 +8,13 @@ import type { Rejected, Result } from "./run";
 
 type Link = { runId: string; operation: string; decorator: string };
 
-/** 后续加入：run.waiting、run.killed、park.opened / park.closed、快照与恢复等 */
+/** 后续加入：run.killed、park.opened / park.closed、快照与恢复等 */
 export type EventBody =
   /** chain：这个 Run 的装饰器链序，从外到内 */
-  | { type: "run.started"; runId: string; operation: string; input: unknown; chain: string[] }
+  | { type: "run.started"; runId: string; operation: string; input: unknown; parent?: string; depth: number; chain: string[] }
   | { type: "run.exited"; runId: string; operation: string; result: Result }
+  /** 内核在建子 Run 之前就拒绝了这次调用（目标不存在、超出保险丝等）；runId 是发起方 */
+  | { type: "call.rejected"; runId: string; target: string; input: unknown; result: Rejected }
   | ({ type: "decorator.rewrote"; phase: "input" | "result"; value: unknown } & Link)
   | ({ type: "decorator.rejected"; result: Rejected } & Link)
   | ({ type: "decorator.failed"; onError: OnError; error: string } & Link);

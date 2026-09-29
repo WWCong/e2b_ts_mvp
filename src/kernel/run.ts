@@ -2,17 +2,17 @@
  * Run：Operation 的一次执行，由状态机管理（3.4）。
  */
 
-/** 后续加入：waiting（等子 Run / 等 unpark）、killed（取消） */
-export type RunStatus = "init" | "running" | "exited";
+/** waiting：在等子 Run（后续还有等 unpark）。后续加入：killed（取消） */
+export type RunStatus = "init" | "running" | "waiting" | "exited";
 
 /** 拒绝结果：管控短路与执行失败都以调用结果返回，不抛异常（R16） */
 export type Rejected = { ok: false; by: string; reason: string; retryable: boolean };
 
 export type Result = { ok: true; value: unknown } | Rejected;
 
-/** 把异常转成拒绝结果 */
-export function reject(by: string, err: unknown): Rejected {
-  const reason = err instanceof Error ? err.message : String(err);
+/** 把异常或原因转成拒绝结果 */
+export function reject(by: string, cause: unknown): Rejected {
+  const reason = cause instanceof Error ? cause.message : String(cause);
   return { ok: false, by, reason, retryable: false };
 }
 
@@ -22,14 +22,19 @@ export type Run = {
   /** 冻结前装饰器可以整体替换 */
   input: unknown;
   status: RunStatus;
-  // 后续按需加入（附 A）：depth / parent / spawnedBy、operations（能力面）、
+  /** 外部发起为 0，子 Run 加一 */
+  readonly depth: number;
+  /** 父 Run 的 runId；根 Run 没有 */
+  readonly parent?: string;
+  // 后续按需加入（附 A）：spawnedBy、operations（能力面）、
   // context、limits、counters、replaying、calls
 };
 
 /** 合法转换。init → running 即进入装饰器链 */
 const NEXT: Record<RunStatus, readonly RunStatus[]> = {
   init: ["running"],
-  running: ["exited"],
+  running: ["waiting", "exited"],
+  waiting: ["running"],
   exited: [],
 };
 
