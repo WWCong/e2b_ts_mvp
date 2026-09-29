@@ -1,13 +1,14 @@
 {
-  "name": "harness-mvp",
+  "name": "harness",
   "version": "0.1.0",
-  "type": "module",
   "private": true,
+  "type": "module",
   "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
-  },
-  "dependencies": {}
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
+  }
 }

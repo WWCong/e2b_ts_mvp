@@ -1,22 +1,19 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
+    "target": "ESNext",
+    "lib": ["ESNext"],
+    "module": "Preserve",
     "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "types": ["bun"],
     "allowImportingTsExtensions": true,
-    "strict": true,
+    "verbatimModuleSyntax": true,
     "noEmit": true,
-    "skipLibCheck": true,
-    "types": [
-      "node"
-    ]
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true
   },
-  "include": [
-    "src",
-    "test",
-    "scripts"
-  ],
-  "exclude": [
-    "legacy"
-  ]
+  "include": ["src", "test"]
 }
