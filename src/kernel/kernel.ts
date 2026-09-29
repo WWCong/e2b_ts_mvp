@@ -6,15 +6,16 @@ import { z } from "zod";
 import { runChain, type DecoratorDef } from "./chain";
 import { EventStream } from "./events";
 import { reject, transition, type Ctx, type Rejected, type Result, type Run } from "./run";
+import { inSurface, type Surface } from "./surface";
 
 /** ctx 之外恰好一个入参、返回 Promise；ctx 不算入参，不进 schema */
 export type OperationImpl = (ctx: Ctx, input: any) => Promise<unknown>;
 
 /**
  * 注册表里的一项 Operation。插件用 op() 声明，装载器补上名字（harness.ts、loader.ts）。
- * 后续加入：usage、limits、only / exclude、public。
+ * 后续加入：usage、limits、public。
  */
-export type Operation = {
+export type Operation = Surface & {
   name: string;
   /** 入参契约：建 Run 前按它校验，实现拿到解析后的值；也是交给模型的工具 schema（z.toJSONSchema） */
   input: z.ZodType;
@@ -81,10 +82,19 @@ export class Kernel {
   /**
    * ctx.call 的实现：发起 caller 的子调用并等它返回。
    * pending 是 caller 还没返回的子调用；不为空时 caller 处于 waiting。
+   * 给了 surface 就检查目标在不在里面；装饰器发起的调用不给。
    */
-  private callChild(caller: Run, pending: Set<Promise<Result>>, name: string, input: unknown): Promise<Result> {
-    const admitted =
-      caller.status === "exited" ? reject("kernel", "caller has exited") : this.admit(name, input, caller);
+  private callChild(
+    caller: Run,
+    pending: Set<Promise<Result>>,
+    name: string,
+    input: unknown,
+    surface?: Surface,
+  ): Promise<Result> {
+    let admitted: Admitted | Rejected;
+    if (caller.status === "exited") admitted = reject("kernel", "caller has exited");
+    else if (surface && !inSurface(surface, name)) admitted = reject("kernel", `${name} is not in the surface of ${caller.operation}`);
+    else admitted = this.admit(name, input, caller);
     if ("ok" in admitted) {
       this.events.emit({ type: "call.rejected", runId: caller.runId, target: name, input, result: admitted });
       return Promise.resolve(admitted);
@@ -153,8 +163,10 @@ export class Kernel {
     });
 
     const pending = new Set<Promise<Result>>();
-    const ctx: Ctx = { call: (name, input) => this.callChild(run, pending, name, input) };
-    const result = await runChain(ctx, run, chain, () => this.invoke(ctx, run, op), this.events);
+    // 实现的调用查它自己的能力面；装饰器的调用同样记在这个 Run 名下，但不查它的能力面（4.1）
+    const ctx: Ctx = { call: (name, input) => this.callChild(run, pending, name, input, op) };
+    const decoratorCtx: Ctx = { call: (name, input) => this.callChild(run, pending, name, input) };
+    const result = await runChain(decoratorCtx, run, chain, () => this.invoke(ctx, run, op), this.events);
     // 实现没等完的子调用，等它们都返回再退出，不留悬空的子 Run
     while (pending.size > 0) await Promise.all(pending);
 

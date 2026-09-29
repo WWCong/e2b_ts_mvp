@@ -17,11 +17,11 @@ export async function loadPlugin(kernel: Kernel, dir: string): Promise<void> {
     const name = `${pkg}.${exp}`;
     const kind = (value as { kind?: unknown } | null)?.kind;
     if (kind === "operation") {
-      const { input, decorators, impl } = value as OpDecl;
-      kernel.register({ name, input, decorators, impl });
+      const { kind: _, ...decl } = value as OpDecl;
+      kernel.register({ name, ...decl });
     } else if (kind === "decorator") {
-      const { onError, fn } = value as DecoratorDecl;
-      kernel.registerDecorator({ id: name, onError, fn });
+      const { kind: _, ...decl } = value as DecoratorDecl;
+      kernel.registerDecorator({ id: name, ...decl });
     } else {
       throw new Error(`${pkg}: export ${exp} is neither op() nor decorator()`);
     }

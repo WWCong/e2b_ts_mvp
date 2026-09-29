@@ -10,7 +10,7 @@ import { freeze, reject, type Ctx, type Result, type Run } from "./run";
 export type OnError = "open" | "closed";
 
 /**
- * ctx 与被装饰 Run 的实现拿到的是同一个，ctx.call 记在被装饰的 Run 名下。
+ * ctx.call 记在被装饰的 Run 名下，但不查它的能力面。
  * next() 执行内层（最终是实现）并返回它的结果，只能调一次；要用结果就存进变量。
  *
  *   放行          return next()

@@ -16,6 +16,9 @@ export function op<S extends z.ZodType>(decl: {
   input: S;
   /** 自选装饰器，按书写顺序从外到内 */
   decorators?: string[];
+  /** 能力面收窄：项是 Operation 名或包名，先 only 再 exclude；都不写即全开 */
+  only?: string[];
+  exclude?: string[];
   impl: (ctx: Ctx, input: z.output<S>) => Promise<unknown>;
 }): OpDecl {
   return { kind: "operation", ...decl };
