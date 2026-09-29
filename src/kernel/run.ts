@@ -2,7 +2,7 @@
  * Run：Operation 的一次执行，由状态机管理（3.4）。
  */
 
-/** waiting：在等子 Run（后续还有等 unpark）；killed：被杀（取消或关停） */
+/** waiting：在等子 Run 或等 unpark（harness_park）；killed：被杀（取消或关停） */
 export type RunStatus = "init" | "running" | "waiting" | "exited" | "killed";
 
 /** 拒绝结果：管控短路与执行失败都以调用结果返回，不抛异常（R16） */
@@ -15,9 +15,11 @@ export type ToolSpec = { name: string; description: string; inputSchema: Record<
 
 /**
  * 内核交给实现与装饰器的句柄，绑定在一个 Run 上。
- * 后续加入：spawn、emit，以及 runId、depth、replaying 等只读信息。
+ * 后续加入：spawn、emit，以及 depth、replaying 等只读信息。
  */
 export type Ctx = {
+  /** 这个 Run 的 runId */
+  runId: string;
   /** 发起这个 Run 的子调用并等它返回；拒绝作为结果返回（5.3） */
   call(name: string, input: unknown): Promise<Result>;
   /** Run 被杀（取消或关停）时 abort。传给 fetch、子进程等支持它的 API，IO 当场中止 */

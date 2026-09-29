@@ -1,5 +1,5 @@
 /**
- * 内核：注册表、Run 的创建与执行、对外的调用、收割、取消与关停接口。
+ * 内核：注册表、Run 的创建与执行、挂起（harness_park），对外的调用、收割、送值与撤回、取消与关停接口。
  */
 
 import { z } from "zod";
@@ -39,6 +39,12 @@ export type KernelConfig = {
 
 const FUSE_DEFAULTS = { maxDepth: 32, maxLiveRuns: 1024 };
 
+/** harness_park 的入参：值要符合的 JSON Schema，与交给外部、内核不解释的 payload（3.5） */
+const PARK_INPUT = z.object({ schema: z.record(z.string(), z.unknown()), payload: z.unknown() });
+
+/** 等待中的 park：送来的值按 schema 校验，经 settle 交给等待的实现 */
+type Park = { schema: z.ZodType; settle: (result: Result) => void };
+
 /** 通过检查、待执行的 Run */
 type Admitted = { run: Run; op: Operation; chain: DecoratorDef[] };
 
@@ -46,8 +52,10 @@ type Admitted = { run: Run; op: Operation; chain: DecoratorDef[] };
 type LiveRun = {
   run: Run;
   parent?: LiveRun;
-  /** 在途的子 Run；不为空时 run 处于 waiting */
+  /** 在途的子 Run */
   children: Set<LiveRun>;
+  /** 这个 Run 是 harness_park、正在等值时才有 */
+  park?: Park;
   /** Run 的结果：正常退出与被杀，谁先到算谁 */
   done: PromiseWithResolvers<Result>;
   /** 被杀时 abort，即 ctx.signal */
@@ -69,6 +77,8 @@ export class Kernel {
 
   constructor(private readonly config: KernelConfig = {}) {
     this.fuse = { ...FUSE_DEFAULTS, ...config.kernel };
+    // 内核自带的 Operation：不公开，照常过装饰器链、受能力面约束
+    this.register({ name: "harness_park", input: PARK_INPUT, impl: (ctx, input) => this.park(ctx.runId, input) });
   }
 
   /** 名字须合命名规则；公开的 Operation 须写 usage；入参 schema 转不成 JSON Schema 的（如 z.date()）在这里就报错 */
@@ -109,6 +119,25 @@ export class Kernel {
   }
 
   /**
+   * 对外接口·送值：把值送给等待中的 park（id 为 park 的 runId），按它的 schema 校验。
+   * 不在等待或值不符时抛异常，park 照旧等待。
+   */
+  unpark(id: string, value: unknown): void {
+    const live = this.lives.get(id);
+    if (!live?.park) throw new Error(`not parked: ${id}`);
+    const parsed = live.park.schema.safeParse(value);
+    if (!parsed.success) throw new Error(`invalid value for park ${id}:\n${z.prettifyError(parsed.error)}`);
+    this.closePark(live, live.park, { ok: true, value: parsed.data });
+  }
+
+  /** 对外接口·撤回：等待中的 park 以拒绝结果返回，by 为 harness_park */
+  withdraw(id: string, reason: string): void {
+    const live = this.lives.get(id);
+    if (!live?.park) throw new Error(`not parked: ${id}`);
+    this.closePark(live, live.park, reject("harness_park", reason));
+  }
+
+  /**
    * 对外接口·取消：取消一个在途 Run 及其子孙，返回是否取消了（已结束或不存在返回 false）。
    * 被取消的 Run 以内核的拒绝结果交给等它的一方：父 Run，或收割方。
    * 正在做 IO 的实现经 ctx.signal 得知取消。
@@ -122,8 +151,8 @@ export class Kernel {
 
   /**
    * 对外接口·关停（9.2）：不再接受新的外部调用，等在途的 Run 树收敛；到 timeoutMs 仍在途的按 killed 处理。
-   * 在途树内部的子调用照常进行，好让它们收敛。
-   * 后续加入：harness.stopping 责任链（投递插件 flush、各插件清理）；空闲的树落快照。
+   * 在途树内部的子调用照常进行，好让它们收敛。等 park 的树不会自己收敛，到时同样被杀。
+   * 后续加入：harness.stopping 责任链（投递插件 flush、各插件清理）；空闲的树落快照、不杀。
    */
   async stop(timeoutMs: number): Promise<void> {
     this.stopping = true;
@@ -149,9 +178,6 @@ export class Kernel {
       this.events.emit({ type: "call.rejected", runId: run.runId, target: name, input, result: admitted });
       return Promise.resolve(admitted);
     }
-
-    // 先转 waiting 再执行：子 Run 的实现在 execute 里同步开始
-    if (caller.children.size === 0) transition(run, "waiting");
     return this.execute(admitted, caller);
   }
 
@@ -201,7 +227,11 @@ export class Kernel {
       abort: new AbortController(),
     };
     this.lives.set(run.runId, live);
-    parent?.children.add(live);
+    if (parent) {
+      parent.children.add(live);
+      // 父先转 waiting：子 Run 的实现在下面同步开始
+      this.refresh(parent);
+    }
     transition(run, "running");
     this.events.emit({
       type: "run.started",
@@ -216,11 +246,12 @@ export class Kernel {
     // 实现的调用查它自己的能力面；装饰器的调用同样记在这个 Run 名下，但不查它的能力面（4.1）
     const { signal } = live.abort;
     const ctx: Ctx = {
+      runId: run.runId,
       call: (name, input) => this.callChild(live, name, input, op),
       signal,
       tools: () => this.toolsIn(op),
     };
-    const decoratorCtx: DecoratorCtx = { call: (name, input) => this.callChild(live, name, input), signal };
+    const decoratorCtx: DecoratorCtx = { runId: run.runId, call: (name, input) => this.callChild(live, name, input), signal };
 
     const settle = async () => {
       const result = await runChain(decoratorCtx, run, chain, () => this.invoke(ctx, run, op), this.events);
@@ -238,10 +269,14 @@ export class Kernel {
     return live.done.promise;
   }
 
-  /** 杀掉 live 及其子孙：自己先转 killed 并 abort 它的 signal，再杀子 Run；等它的一方拿到内核的拒绝结果 */
+  /**
+   * 杀掉 live 及其子孙：自己先转 killed、关掉它的 park、abort 它的 signal，再杀子 Run；
+   * 等它的一方拿到内核的拒绝结果。
+   */
   private kill(live: LiveRun, reason: "cancelled" | "shutdown"): void {
     transition(live.run, "killed");
     this.events.emit({ type: "run.killed", runId: live.run.runId, operation: live.run.operation, reason });
+    if (live.park) this.closePark(live, live.park, reject("kernel", reason));
     live.abort.abort();
     for (const child of [...live.children]) this.kill(child, reason);
     this.forget(live);
@@ -255,13 +290,48 @@ export class Kernel {
       .sort((a, b) => (a.name < b.name ? -1 : 1));
   }
 
-  /** Run 退出或被杀后从内核移除；父不再等任何子 Run 时回到 running */
+  /** Run 退出或被杀后从内核移除；父不再等任何东西时回到 running */
   private forget(live: LiveRun): void {
     this.lives.delete(live.run.runId);
     const { parent } = live;
     if (!parent) return;
     parent.children.delete(live);
-    if (parent.children.size === 0 && parent.run.status === "waiting") transition(parent.run, "running");
+    this.refresh(parent);
+  }
+
+  /** 在途 Run 在等子 Run 或等 unpark 时为 waiting，否则为 running（R8）；已结束的不动 */
+  private refresh(live: LiveRun): void {
+    const { run } = live;
+    if (run.status !== "running" && run.status !== "waiting") return;
+    const to = live.children.size > 0 || live.park ? "waiting" : "running";
+    if (run.status !== to) transition(run, to);
+  }
+
+  /**
+   * harness_park 的实现：Run 转 waiting 并发 park.opened，等 unpark、撤回或被杀。
+   * 产出送来的值；被撤回时以拒绝返回（被杀时结果本就作废）。
+   * 后续加入：同时等待的 park 数上限（保险丝）；树进入空闲（没有 running 的 Run）时写快照（3.6）。
+   */
+  private async park(runId: string, input: z.output<typeof PARK_INPUT>): Promise<unknown> {
+    // 实现开始执行时 Run 必在途（invoke 已挡掉被杀的）
+    const live = this.lives.get(runId)!;
+    const { promise, resolve } = Promise.withResolvers<Result>();
+    live.park = { schema: z.fromJSONSchema(input.schema), settle: resolve };
+    this.refresh(live);
+    this.events.emit({ type: "park.opened", runId, schema: input.schema, payload: input.payload });
+
+    const result = await promise;
+    if (!result.ok) throw new Error(result.reason);
+    return result.value;
+  }
+
+  /** 先转回 running（被杀的除外）、发 park.closed，再把结果交给等待的实现 */
+  private closePark(live: LiveRun, park: Park, result: Result): void {
+    // 后续加入：树从空闲转回活跃之前，先删掉它的快照（R11）
+    live.park = undefined;
+    this.refresh(live);
+    this.events.emit({ type: "park.closed", runId: live.run.runId, result });
+    park.settle(result);
   }
 
   /** 实现抛出的异常也转成结果，不留悬空调用 */

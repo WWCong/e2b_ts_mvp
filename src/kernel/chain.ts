@@ -23,9 +23,10 @@ export type DecoratorCtx = Omit<Ctx, "tools">;
  *   改结果        const r = await next(); return 新结果
  *   拒绝          不调 next，return { ok: false, by, reason, retryable }
  *   直接给结果    不调 next，return { ok: true, value }   （如缓存）
+ *   挂起          const r = await ctx.call("harness_park", { schema, payload })，据 r 放行或拒绝（如审批）
  *
  * 拒绝以结果返回，不抛异常；抛异常按 onError 处理。
- * 后续加入：往 run.context 放条目；经 ctx.call 调 harness.park 挂起。
+ * 后续加入：往 run.context 放条目。
  */
 export type Decorator = (ctx: DecoratorCtx, run: Run, next: () => Promise<Result>) => Promise<Result>;
 
