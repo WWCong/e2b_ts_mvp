@@ -2,8 +2,8 @@
  * Run：Operation 的一次执行，由状态机管理（3.4）。
  */
 
-/** waiting：在等子 Run（后续还有等 unpark）。后续加入：killed（取消） */
-export type RunStatus = "init" | "running" | "waiting" | "exited";
+/** waiting：在等子 Run（后续还有等 unpark）；killed：被取消 */
+export type RunStatus = "init" | "running" | "waiting" | "exited" | "killed";
 
 /** 拒绝结果：管控短路与执行失败都以调用结果返回，不抛异常（R16） */
 export type Rejected = { ok: false; by: string; reason: string; retryable: boolean };
@@ -12,7 +12,7 @@ export type Result = { ok: true; value: unknown } | Rejected;
 
 /**
  * 内核交给实现与装饰器的句柄，绑定在一个 Run 上。
- * 后续加入：spawn、emit，以及 runId、depth、replaying 等只读信息。
+ * 后续加入：spawn、emit、signal（被取消时 abort，供原语中止 IO），以及 runId、depth、replaying 等只读信息。
  */
 export type Ctx = {
   /** 发起这个 Run 的子调用并等它返回；拒绝作为结果返回（5.3） */
@@ -42,9 +42,10 @@ export type Run = {
 /** 合法转换。init → running 即进入装饰器链 */
 const NEXT: Record<RunStatus, readonly RunStatus[]> = {
   init: ["running"],
-  running: ["waiting", "exited"],
-  waiting: ["running"],
+  running: ["waiting", "exited", "killed"],
+  waiting: ["running", "killed"],
   exited: [],
+  killed: [],
 };
 
 export function transition(run: Run, to: RunStatus): void {

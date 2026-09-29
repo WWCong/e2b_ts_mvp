@@ -1,5 +1,5 @@
 /**
- * 内核：注册表、Run 的创建与执行、对外的调用与收割接口。
+ * 内核：注册表、Run 的创建与执行、对外的调用、收割与取消接口。
  */
 
 import { z } from "zod";
@@ -37,15 +37,25 @@ const FUSE_DEFAULTS = { maxDepth: 32, maxLiveRuns: 1024 };
 /** 通过检查、待执行的 Run */
 type Admitted = { run: Run; op: Operation; chain: DecoratorDef[] };
 
+/** 在途 Run 的内核侧记录；Run 退出或被取消后移除 */
+type LiveRun = {
+  run: Run;
+  parent?: LiveRun;
+  /** 在途的子 Run；不为空时 run 处于 waiting */
+  children: Set<LiveRun>;
+  /** Run 的结果：正常退出与被取消，谁先到算谁 */
+  done: PromiseWithResolvers<Result>;
+};
+
 export class Kernel {
   readonly events = new EventStream();
   private readonly operations = new Map<string, Operation>();
   private readonly decorators = new Map<string, DecoratorDef>();
   /** runId → 退出结果。结果保留到调用方收割，收割后移除（3.4） */
   private readonly exits = new Map<string, Promise<Result>>();
+  /** runId → 在途 Run */
+  private readonly lives = new Map<string, LiveRun>();
   private readonly fuse: { maxDepth: number; maxLiveRuns: number };
-  /** 已建、未退出的 Run 数 */
-  private live = 0;
 
   constructor(private readonly config: KernelConfig = {}) {
     this.fuse = { ...FUSE_DEFAULTS, ...config.kernel };
@@ -80,41 +90,40 @@ export class Kernel {
   }
 
   /**
+   * 对外接口·取消：取消一个在途 Run 及其子孙，返回是否取消了（已结束或不存在返回 false）。
+   * 被取消的 Run 以内核的拒绝结果交给等它的一方：父 Run，或收割方。
+   * 后续加入：run.cancelling 责任链（或 ctx.signal），让插件在取消时收尾。
+   */
+  cancel(runId: string): boolean {
+    const live = this.lives.get(runId);
+    if (!live) return false;
+    this.kill(live);
+    return true;
+  }
+
+  /**
    * ctx.call 的实现：发起 caller 的子调用并等它返回。
-   * pending 是 caller 还没返回的子调用；不为空时 caller 处于 waiting。
    * 给了 surface 就检查目标在不在里面；装饰器发起的调用不给。
    */
-  private callChild(
-    caller: Run,
-    pending: Set<Promise<Result>>,
-    name: string,
-    input: unknown,
-    surface?: Surface,
-  ): Promise<Result> {
+  private callChild(caller: LiveRun, name: string, input: unknown, surface?: Surface): Promise<Result> {
+    const { run } = caller;
     let admitted: Admitted | Rejected;
-    if (caller.status === "exited") admitted = reject("kernel", "caller has exited");
-    else if (surface && !inSurface(surface, name)) admitted = reject("kernel", `${name} is not in the surface of ${caller.operation}`);
-    else admitted = this.admit(name, input, caller);
+    if (run.status === "exited" || run.status === "killed") admitted = reject("kernel", `caller is ${run.status}`);
+    else if (surface && !inSurface(surface, name)) admitted = reject("kernel", `${name} is not in the surface of ${run.operation}`);
+    else admitted = this.admit(name, input, run);
     if ("ok" in admitted) {
-      this.events.emit({ type: "call.rejected", runId: caller.runId, target: name, input, result: admitted });
+      this.events.emit({ type: "call.rejected", runId: run.runId, target: name, input, result: admitted });
       return Promise.resolve(admitted);
     }
 
     // 先转 waiting 再执行：子 Run 的实现在 execute 里同步开始
-    if (pending.size === 0) transition(caller, "waiting");
-    const settled = this.execute(admitted).then((result) => {
-      pending.delete(settled);
-      if (pending.size === 0) transition(caller, "running");
-      return result;
-    });
-    pending.add(settled);
-    return settled;
+    if (caller.children.size === 0) transition(run, "waiting");
+    return this.execute(admitted, caller);
   }
 
   /**
    * 建 Run 前的检查（目标存在、保险丝、链能解析、入参符合 schema），通过则建出 Run；
    * 不通过以拒绝返回，不建 Run。
-   * 后续加入：能力面检查。
    */
   private admit(name: string, input: unknown, parent?: Run): Admitted | Rejected {
     const op = this.operations.get(name);
@@ -122,7 +131,7 @@ export class Kernel {
 
     const depth = parent ? parent.depth + 1 : 0;
     if (depth > this.fuse.maxDepth) return reject("kernel", `max depth ${this.fuse.maxDepth} exceeded`);
-    if (this.live >= this.fuse.maxLiveRuns) return reject("kernel", `max live runs ${this.fuse.maxLiveRuns} exceeded`);
+    if (this.lives.size >= this.fuse.maxLiveRuns) return reject("kernel", `max live runs ${this.fuse.maxLiveRuns} exceeded`);
 
     // 默认装饰器在外，自选装饰器在内。后续由装配期校验提前发现未注册的 id
     const chain: DecoratorDef[] = [];
@@ -149,8 +158,10 @@ export class Kernel {
     return { run, op, chain };
   }
 
-  private async execute({ run, op, chain }: Admitted): Promise<Result> {
-    this.live++;
+  private execute({ run, op, chain }: Admitted, parent?: LiveRun): Promise<Result> {
+    const live: LiveRun = { run, parent, children: new Set(), done: Promise.withResolvers() };
+    this.lives.set(run.runId, live);
+    parent?.children.add(live);
     transition(run, "running");
     this.events.emit({
       type: "run.started",
@@ -162,22 +173,48 @@ export class Kernel {
       chain: chain.map((d) => d.id),
     });
 
-    const pending = new Set<Promise<Result>>();
     // 实现的调用查它自己的能力面；装饰器的调用同样记在这个 Run 名下，但不查它的能力面（4.1）
-    const ctx: Ctx = { call: (name, input) => this.callChild(run, pending, name, input, op) };
-    const decoratorCtx: Ctx = { call: (name, input) => this.callChild(run, pending, name, input) };
-    const result = await runChain(decoratorCtx, run, chain, () => this.invoke(ctx, run, op), this.events);
-    // 实现没等完的子调用，等它们都返回再退出，不留悬空的子 Run
-    while (pending.size > 0) await Promise.all(pending);
+    const ctx: Ctx = { call: (name, input) => this.callChild(live, name, input, op) };
+    const decoratorCtx: Ctx = { call: (name, input) => this.callChild(live, name, input) };
 
-    transition(run, "exited");
-    this.live--;
-    this.events.emit({ type: "run.exited", runId: run.runId, operation: run.operation, result });
-    return result;
+    const settle = async () => {
+      const result = await runChain(decoratorCtx, run, chain, () => this.invoke(ctx, run, op), this.events);
+      // 实现没等完的子调用，等它们都返回再退出，不留悬空的子 Run
+      while (live.children.size > 0) await Promise.all([...live.children].map((c) => c.done.promise));
+      // 已被取消：JS 无法抢占，实现照样跑完，但结果作废
+      if (run.status === "killed") return;
+
+      transition(run, "exited");
+      this.forget(live);
+      this.events.emit({ type: "run.exited", runId: run.runId, operation: run.operation, result });
+      live.done.resolve(result);
+    };
+    void settle();
+    return live.done.promise;
+  }
+
+  /** 取消 live 及其子孙：自己先转 killed，再取消子 Run；等它的一方拿到内核的拒绝结果 */
+  private kill(live: LiveRun): void {
+    transition(live.run, "killed");
+    this.events.emit({ type: "run.killed", runId: live.run.runId, operation: live.run.operation });
+    for (const child of [...live.children]) this.kill(child);
+    this.forget(live);
+    live.done.resolve(reject("kernel", "cancelled"));
+  }
+
+  /** Run 退出或被取消后从内核移除；父不再等任何子 Run 时回到 running */
+  private forget(live: LiveRun): void {
+    this.lives.delete(live.run.runId);
+    const { parent } = live;
+    if (!parent) return;
+    parent.children.delete(live);
+    if (parent.children.size === 0 && parent.run.status === "waiting") transition(parent.run, "running");
   }
 
   /** 实现抛出的异常也转成结果，不留悬空调用 */
   private async invoke(ctx: Ctx, run: Run, op: Operation): Promise<Result> {
+    // 装饰器还没走到实现时 Run 就被取消了：不再开始执行实现
+    if (run.status === "killed") return reject("kernel", "cancelled");
     try {
       return { ok: true, value: await op.impl(ctx, run.input) };
     } catch (err) {

@@ -1,0 +1,116 @@
+import { describe, expect, test } from "bun:test";
+import { z } from "zod";
+import type { HarnessEvent } from "./events";
+import { Kernel } from "./kernel";
+import type { Rejected } from "./run";
+
+const cancelled: Rejected = { ok: false, by: "kernel", reason: "cancelled", retryable: false };
+
+/** demo.parent 调 demo.child；demo.child 卡在 gate 上，直到测试放行 */
+function setup() {
+  const kernel = new Kernel();
+  const events: HarnessEvent[] = [];
+  kernel.events.subscribe((e) => events.push(e));
+  const gate = Promise.withResolvers<void>();
+  kernel.register({ name: "demo.parent", input: z.null(), impl: (ctx) => ctx.call("demo.child", null) });
+  kernel.register({
+    name: "demo.child",
+    input: z.null(),
+    impl: async () => {
+      await gate.promise;
+      return "late";
+    },
+  });
+  const idOf = (operation: string) => {
+    const started = events.find((e) => e.type === "run.started" && e.operation === operation);
+    if (!started) throw new Error(`${operation} has not started`);
+    return started.runId;
+  };
+  return { kernel, events, gate, idOf };
+}
+
+describe("取消", () => {
+  test("取消根 Run：连同子孙转 killed，收割得到内核的拒绝，不再有 run.exited", async () => {
+    const { kernel, events, idOf } = setup();
+    const root = kernel.start("demo.parent", null);
+
+    expect(kernel.cancel(root)).toBe(true);
+    expect(await kernel.reap(root)).toEqual(cancelled);
+    await Bun.sleep(1);
+    expect(events.map((e) => [e.type, e.runId])).toEqual([
+      ["run.started", root],
+      ["run.started", idOf("demo.child")],
+      ["run.killed", root],
+      ["run.killed", idOf("demo.child")],
+    ]);
+  });
+
+  test("取消子 Run：父拿到内核的拒绝，照常往下执行", async () => {
+    const { kernel, idOf } = setup();
+    const root = kernel.start("demo.parent", null);
+
+    kernel.cancel(idOf("demo.child"));
+    expect(await kernel.reap(root)).toEqual({ ok: true, value: cancelled });
+  });
+
+  test("已在跑的实现会跑完，但结果作废；之后它发起的调用以拒绝返回", async () => {
+    const { kernel, events, gate } = setup();
+    let late: unknown;
+    kernel.register({
+      name: "demo.stubborn",
+      input: z.null(),
+      impl: async (ctx) => {
+        await gate.promise;
+        late = await ctx.call("demo.child", null);
+        return "ignored";
+      },
+    });
+    const id = kernel.start("demo.stubborn", null);
+
+    kernel.cancel(id);
+    gate.resolve();
+    await Bun.sleep(1);
+    expect(late).toMatchObject({ ok: false, by: "kernel", reason: "caller is killed" });
+    expect(events.map((e) => e.type)).toEqual(["run.started", "run.killed", "call.rejected"]);
+    expect(await kernel.reap(id)).toEqual(cancelled);
+  });
+
+  test("装饰器还没走到实现时被取消：实现不再开始", async () => {
+    const { kernel, gate } = setup();
+    let calls = 0;
+    kernel.registerDecorator({
+      id: "demo.hold",
+      onError: "closed",
+      fn: async (_ctx, _run, next) => {
+        await gate.promise;
+        return next();
+      },
+    });
+    kernel.register({
+      name: "demo.work",
+      input: z.null(),
+      decorators: ["demo.hold"],
+      impl: async () => {
+        calls++;
+        return "done";
+      },
+    });
+    const id = kernel.start("demo.work", null);
+
+    kernel.cancel(id);
+    gate.resolve();
+    await Bun.sleep(1);
+    expect(calls).toBe(0);
+    expect(await kernel.reap(id)).toEqual(cancelled);
+  });
+
+  test("取消已结束或不存在的 Run：返回 false", async () => {
+    const { kernel, gate } = setup();
+    gate.resolve();
+    const root = kernel.start("demo.parent", null);
+    await kernel.reap(root);
+
+    expect(kernel.cancel(root)).toBe(false);
+    expect(kernel.cancel("nope")).toBe(false);
+  });
+});

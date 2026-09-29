@@ -157,6 +157,6 @@ describe("子调用", () => {
     });
 
     await run("demo.leak", null);
-    expect(await late).toMatchObject({ ok: false, reason: "caller has exited" });
+    expect(await late).toMatchObject({ ok: false, reason: "caller is exited" });
   });
 });
