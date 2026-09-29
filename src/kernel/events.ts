@@ -3,12 +3,19 @@
  * 内核只写不读回，投递去向由订阅者（投递插件）决定（R25）。
  */
 
-import type { Result } from "./run";
+import type { OnError } from "./chain";
+import type { Rejected, Result } from "./run";
 
-/** 后续加入：run.waiting、run.killed、park.opened / park.closed、装饰器处置、快照与恢复等 */
+type Link = { runId: string; operation: string; decorator: string };
+
+/** 后续加入：run.waiting、run.killed、park.opened / park.closed、快照与恢复等 */
 export type EventBody =
-  | { type: "run.started"; runId: string; operation: string; input: unknown }
-  | { type: "run.exited"; runId: string; operation: string; result: Result };
+  /** chain：这个 Run 的装饰器链序，从外到内 */
+  | { type: "run.started"; runId: string; operation: string; input: unknown; chain: string[] }
+  | { type: "run.exited"; runId: string; operation: string; result: Result }
+  | ({ type: "decorator.rewrote"; phase: "input" | "result"; value: unknown } & Link)
+  | ({ type: "decorator.rejected"; result: Rejected } & Link)
+  | ({ type: "decorator.failed"; onError: OnError; error: string } & Link);
 
 /** 单调序号 + 时间戳；冗余自足，单看一条就是完整事实 */
 export type HarnessEvent = EventBody & { seq: number; ts: number };

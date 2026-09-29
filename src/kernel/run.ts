@@ -10,16 +10,23 @@ export type Rejected = { ok: false; by: string; reason: string; retryable: boole
 
 export type Result = { ok: true; value: unknown } | Rejected;
 
+/** 把异常转成拒绝结果 */
+export function reject(by: string, err: unknown): Rejected {
+  const reason = err instanceof Error ? err.message : String(err);
+  return { ok: false, by, reason, retryable: false };
+}
+
 export type Run = {
   readonly runId: string;
   readonly operation: string;
-  readonly input: unknown;
+  /** 冻结前装饰器可以整体替换 */
+  input: unknown;
   status: RunStatus;
   // 后续按需加入（附 A）：depth / parent / spawnedBy、operations（能力面）、
   // context、limits、counters、replaying、calls
 };
 
-/** 合法转换。init → running 的时刻后续即「进入装饰器链」 */
+/** 合法转换。init → running 即进入装饰器链 */
 const NEXT: Record<RunStatus, readonly RunStatus[]> = {
   init: ["running"],
   running: ["exited"],
@@ -31,4 +38,12 @@ export function transition(run: Run, to: RunStatus): void {
     throw new Error(`illegal transition ${run.status} -> ${to} (run ${run.runId})`);
   }
   run.status = to;
+}
+
+/**
+ * 配置冻结：装饰器链走到实现的那一刻起，Run 的配置不可再改（3.4）。
+ * 之后再赋值会抛 TypeError（ES module 为严格模式）。后续 context、operations 一并冻结。
+ */
+export function freeze(run: Run): void {
+  Object.defineProperty(run, "input", { writable: false });
 }
