@@ -30,13 +30,6 @@ export type KernelConfig = {
 
 const FUSE_DEFAULTS = { maxDepth: 32, maxLiveRuns: 1024 };
 
-/** 在途 Run 的运行时记录 */
-type Frame = {
-  run: Run;
-  /** 还没返回的子调用 */
-  pending: Set<Promise<Result>>;
-};
-
 /** 通过检查、待执行的 Run */
 type Admitted = { run: Run; op: Operation; chain: DecoratorDef[] };
 
@@ -83,11 +76,10 @@ export class Kernel {
   }
 
   /**
-   * ctx.call 的实现：发起 frame.run 的子调用并等它返回。
-   * 有子调用没返回时，发起方处于 waiting。
+   * ctx.call 的实现：发起 caller 的子调用并等它返回。
+   * pending 是 caller 还没返回的子调用；不为空时 caller 处于 waiting。
    */
-  private callChild(frame: Frame, name: string, input: unknown): Promise<Result> {
-    const caller = frame.run;
+  private callChild(caller: Run, pending: Set<Promise<Result>>, name: string, input: unknown): Promise<Result> {
     const admitted =
       caller.status === "exited" ? reject("kernel", "caller has exited") : this.admit(name, input, caller);
     if ("ok" in admitted) {
@@ -96,13 +88,13 @@ export class Kernel {
     }
 
     // 先转 waiting 再执行：子 Run 的实现在 execute 里同步开始
-    if (frame.pending.size === 0) transition(caller, "waiting");
+    if (pending.size === 0) transition(caller, "waiting");
     const settled = this.execute(admitted).then((result) => {
-      frame.pending.delete(settled);
-      if (frame.pending.size === 0) transition(caller, "running");
+      pending.delete(settled);
+      if (pending.size === 0) transition(caller, "running");
       return result;
     });
-    frame.pending.add(settled);
+    pending.add(settled);
     return settled;
   }
 
@@ -143,11 +135,11 @@ export class Kernel {
       chain: chain.map((d) => d.id),
     });
 
-    const frame: Frame = { run, pending: new Set() };
-    const ctx: Ctx = { call: (name, input) => this.callChild(frame, name, input) };
+    const pending = new Set<Promise<Result>>();
+    const ctx: Ctx = { call: (name, input) => this.callChild(run, pending, name, input) };
     const result = await runChain(ctx, run, chain, () => this.invoke(ctx, run, op), this.events);
     // 实现没等完的子调用，等它们都返回再退出，不留悬空的子 Run
-    while (frame.pending.size > 0) await Promise.all(frame.pending);
+    while (pending.size > 0) await Promise.all(pending);
 
     transition(run, "exited");
     this.live--;
