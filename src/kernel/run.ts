@@ -2,7 +2,7 @@
  * Run：Operation 的一次执行，由状态机管理（3.4）。
  */
 
-/** waiting：在等子 Run（后续还有等 unpark）；killed：被取消 */
+/** waiting：在等子 Run（后续还有等 unpark）；killed：被杀（取消或关停） */
 export type RunStatus = "init" | "running" | "waiting" | "exited" | "killed";
 
 /** 拒绝结果：管控短路与执行失败都以调用结果返回，不抛异常（R16） */
