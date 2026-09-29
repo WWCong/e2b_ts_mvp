@@ -26,14 +26,14 @@ describe("fs 插件", () => {
   test("写、读、列：写时自动建目录，列出结果按名字排序", async () => {
     const { run } = await setup();
 
-    expect(await run("fs.write", { path: "notes/b.md", content: "你好" })).toEqual({
+    expect(await run("fs_write", { path: "notes/b.md", content: "你好" })).toEqual({
       ok: true,
       value: { written: "notes/b.md", bytes: 6 },
     });
-    await run("fs.write", { path: "notes/a.md", content: "a" });
-    expect(await run("fs.read", { path: "notes/b.md" })).toEqual({ ok: true, value: "你好" });
-    expect(await run("fs.list", {})).toEqual({ ok: true, value: [{ name: "notes", type: "dir" }] });
-    expect(await run("fs.list", { path: "notes" })).toEqual({
+    await run("fs_write", { path: "notes/a.md", content: "a" });
+    expect(await run("fs_read", { path: "notes/b.md" })).toEqual({ ok: true, value: "你好" });
+    expect(await run("fs_list", {})).toEqual({ ok: true, value: [{ name: "notes", type: "dir" }] });
+    expect(await run("fs_list", { path: "notes" })).toEqual({
       ok: true,
       value: [
         { name: "a.md", type: "file" },
@@ -46,9 +46,9 @@ describe("fs 插件", () => {
     const { events, run } = await setup();
 
     for (const path of ["../outside.md", "/etc/passwd", "notes/../../outside.md"]) {
-      expect(await run("fs.write", { path, content: "x" })).toEqual({
+      expect(await run("fs_write", { path, content: "x" })).toEqual({
         ok: false,
-        by: "fs.pathGuard",
+        by: "fs_pathGuard",
         reason: `path escapes workspace: ${path}`,
         retryable: true,
       });
@@ -60,15 +60,15 @@ describe("fs 插件", () => {
   test("pathGuard 只看字面上是否越界：以 .. 开头的普通文件名照常放行", async () => {
     const { run } = await setup();
 
-    expect(await run("fs.write", { path: "..notes.md", content: "x" })).toMatchObject({ ok: true });
+    expect(await run("fs_write", { path: "..notes.md", content: "x" })).toMatchObject({ ok: true });
   });
 
-  test("读不存在的文件：以 fs.read 的拒绝返回", async () => {
+  test("读不存在的文件：以 fs_read 的拒绝返回", async () => {
     const { run } = await setup();
 
-    expect(await run("fs.read", { path: "missing.md" })).toMatchObject({
+    expect(await run("fs_read", { path: "missing.md" })).toMatchObject({
       ok: false,
-      by: "fs.read",
+      by: "fs_read",
       reason: expect.stringContaining("ENOENT"),
     });
   });

@@ -6,16 +6,16 @@ import type { ToolSpec } from "./run";
 function setup() {
   const kernel = new Kernel();
   const noop = async () => null;
-  kernel.register({ name: "fs.write", usage: "写文件", public: true, input: z.object({ path: z.string() }), impl: noop });
+  kernel.register({ name: "fs_write", usage: "写文件", public: true, input: z.object({ path: z.string() }), impl: noop });
   kernel.register({
-    name: "fs.list",
+    name: "fs_list",
     usage: "列目录",
     public: true,
     input: z.object({ path: z.string().describe("目录").default(".") }),
     impl: noop,
   });
-  kernel.register({ name: "fs.secret", input: z.null(), impl: noop });
-  kernel.register({ name: "web.search", usage: "搜索", public: true, input: z.object({ q: z.string() }), impl: noop });
+  kernel.register({ name: "fs_secret", input: z.null(), impl: noop });
+  kernel.register({ name: "web_search", usage: "搜索", public: true, input: z.object({ q: z.string() }), impl: noop });
   return kernel;
 }
 
@@ -24,19 +24,19 @@ describe("ctx.tools()", () => {
     const kernel = setup();
     let tools: ToolSpec[] = [];
     kernel.register({
-      name: "demo.agent",
+      name: "demo_agent",
       input: z.null(),
       only: ["fs"],
       impl: async (ctx) => {
         tools = ctx.tools();
       },
     });
-    await kernel.reap(kernel.start("demo.agent", null));
+    await kernel.reap(kernel.start("demo_agent", null));
 
-    // fs.secret 不公开，web.search 不在能力面
-    expect(tools.map((t) => t.name)).toEqual(["fs.list", "fs.write"]);
+    // fs_secret 不公开，web_search 不在能力面
+    expect(tools.map((t) => t.name)).toEqual(["fs_list", "fs_write"]);
     expect(tools[0]).toEqual({
-      name: "fs.list",
+      name: "fs_list",
       description: "列目录",
       inputSchema: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -50,7 +50,7 @@ describe("ctx.tools()", () => {
     const kernel = setup();
     let hasTools: boolean | undefined;
     kernel.registerDecorator({
-      id: "demo.peek",
+      id: "demo_peek",
       onError: "closed",
       fn: async (ctx, _run, next) => {
         // @ts-expect-error 装饰器里写 ctx.tools 编译不过
@@ -59,8 +59,8 @@ describe("ctx.tools()", () => {
         return next();
       },
     });
-    kernel.register({ name: "demo.agent", input: z.null(), decorators: ["demo.peek"], impl: async () => null });
-    await kernel.reap(kernel.start("demo.agent", null));
+    kernel.register({ name: "demo_agent", input: z.null(), decorators: ["demo_peek"], impl: async () => null });
+    await kernel.reap(kernel.start("demo_agent", null));
 
     expect(hasTools).toBe(false);
   });
@@ -69,11 +69,11 @@ describe("ctx.tools()", () => {
     const kernel = new Kernel();
     const noop = async () => null;
 
-    expect(() => kernel.register({ name: "demo.a", public: true, input: z.null(), impl: noop })).toThrow(
-      "public operation needs usage: demo.a",
+    expect(() => kernel.register({ name: "demo_a", public: true, input: z.null(), impl: noop })).toThrow(
+      "public operation needs usage: demo_a",
     );
     expect(() =>
-      kernel.register({ name: "demo.b", usage: "b", public: true, input: z.object({ at: z.date() }), impl: noop }),
+      kernel.register({ name: "demo_b", usage: "b", public: true, input: z.object({ at: z.date() }), impl: noop }),
     ).toThrow("Date cannot be represented in JSON Schema");
   });
 });

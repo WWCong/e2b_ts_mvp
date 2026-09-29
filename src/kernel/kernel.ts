@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { runChain, type DecoratorCtx, type DecoratorDef } from "./chain";
 import { EventStream } from "./events";
+import { checkName } from "./names";
 import { reject, transition, type Ctx, type Rejected, type Result, type Run, type ToolSpec } from "./run";
 import { inSurface, type Surface } from "./surface";
 
@@ -12,7 +13,7 @@ import { inSurface, type Surface } from "./surface";
 export type OperationImpl = (ctx: Ctx, input: any) => Promise<unknown>;
 
 /**
- * 注册表里的一项 Operation。插件用 op() 声明，装载器补上名字（harness.ts、loader.ts）。
+ * 注册表里的一项 Operation。插件用 op() 声明，装载器补上名字「包名_导出名」（harness.ts、loader.ts、names.ts）。
  * 后续加入：limits。
  */
 export type Operation = Surface & {
@@ -70,8 +71,9 @@ export class Kernel {
     this.fuse = { ...FUSE_DEFAULTS, ...config.kernel };
   }
 
-  /** 公开的 Operation 须写 usage；入参 schema 转不成 JSON Schema 的（如 z.date()）在这里就报错 */
+  /** 名字须合命名规则；公开的 Operation 须写 usage；入参 schema 转不成 JSON Schema 的（如 z.date()）在这里就报错 */
   register(op: Operation): void {
+    checkName(op.name);
     if (this.operations.has(op.name)) throw new Error(`duplicate operation: ${op.name}`);
     if (op.public) {
       if (!op.usage) throw new Error(`public operation needs usage: ${op.name}`);

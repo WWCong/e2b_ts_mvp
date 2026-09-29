@@ -5,7 +5,7 @@ import { decorator, op } from "../../harness";
 
 export const hello = op({
   input: z.object({ name: z.string().describe("对方的名字") }),
-  decorators: ["greet.polite"],
+  decorators: ["greet_polite"],
   impl: async (_ctx, input) => `hello ${input.name}`,
 });
 

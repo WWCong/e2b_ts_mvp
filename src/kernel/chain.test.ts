@@ -4,7 +4,7 @@ import type { Decorator, OnError } from "./chain";
 import type { HarnessEvent } from "./events";
 import { Kernel } from "./kernel";
 
-/** echo.say 把收到的入参原样返回，并记下被调用的次数 */
+/** echo_say 把收到的入参原样返回，并记下被调用的次数 */
 function setup(defaultDecorators: string[], decorators: Record<string, Decorator | [Decorator, OnError]>) {
   const kernel = new Kernel({ defaultDecorators });
   const events: HarnessEvent[] = [];
@@ -16,7 +16,7 @@ function setup(defaultDecorators: string[], decorators: Record<string, Decorator
   const echo = { calls: 0 };
   const own = Object.keys(decorators).filter((id) => !defaultDecorators.includes(id));
   kernel.register({
-    name: "echo.say",
+    name: "echo_say",
     input: z.string(),
     decorators: own,
     impl: async (_ctx, input) => {
@@ -24,7 +24,7 @@ function setup(defaultDecorators: string[], decorators: Record<string, Decorator
       return input;
     },
   });
-  const call = (input: unknown) => kernel.reap(kernel.start("echo.say", input));
+  const call = (input: unknown) => kernel.reap(kernel.start("echo_say", input));
   const decoratorEvents = () => events.filter((e) => e.type.startsWith("decorator."));
   return { call, events, decoratorEvents, echo };
 }
@@ -126,7 +126,7 @@ describe("装饰器链", () => {
 
   test("引用未注册的装饰器：start 直接报错", () => {
     const kernel = new Kernel({ defaultDecorators: ["ghost"] });
-    kernel.register({ name: "echo.say", input: z.any(), impl: async (_ctx, x) => x });
-    expect(() => kernel.start("echo.say", {})).toThrow("unknown decorator: ghost");
+    kernel.register({ name: "echo_say", input: z.any(), impl: async (_ctx, x) => x });
+    expect(() => kernel.start("echo_say", {})).toThrow("unknown decorator: ghost");
   });
 });
