@@ -10,6 +10,15 @@ export type Rejected = { ok: false; by: string; reason: string; retryable: boole
 
 export type Result = { ok: true; value: unknown } | Rejected;
 
+/**
+ * 内核交给实现与装饰器的句柄，绑定在一个 Run 上。
+ * 后续加入：spawn、emit，以及 runId、depth、replaying 等只读信息。
+ */
+export type Ctx = {
+  /** 发起这个 Run 的子调用并等它返回；拒绝作为结果返回（5.3） */
+  call(name: string, input: unknown): Promise<Result>;
+};
+
 /** 把异常或原因转成拒绝结果 */
 export function reject(by: string, cause: unknown): Rejected {
   const reason = cause instanceof Error ? cause.message : String(cause);

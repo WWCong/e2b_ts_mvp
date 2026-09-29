@@ -7,7 +7,7 @@ function setup() {
   const kernel = new Kernel();
   const events: HarnessEvent[] = [];
   kernel.events.subscribe((e) => events.push(e));
-  kernel.register({ name: "math.double", impl: async (input: { n: number }) => ({ n: input.n * 2 }) });
+  kernel.register({ name: "math.double", impl: async (_ctx, input: { n: number }) => ({ n: input.n * 2 }) });
   kernel.register({
     name: "demo.fail",
     impl: async () => {

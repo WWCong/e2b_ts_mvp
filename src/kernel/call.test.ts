@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import type { HarnessEvent } from "./events";
-import { call } from "./harness";
 import { Kernel, type KernelConfig } from "./kernel";
 import type { Result, Run } from "./run";
 
@@ -8,7 +7,7 @@ function setup(config: KernelConfig = {}) {
   const kernel = new Kernel(config);
   const events: HarnessEvent[] = [];
   kernel.events.subscribe((e) => events.push(e));
-  kernel.register({ name: "math.double", impl: async (n: number) => n * 2 });
+  kernel.register({ name: "math.double", impl: async (_ctx, n: number) => n * 2 });
   const run = (name: string, input: unknown) => kernel.reap(kernel.start(name, input));
   const started = () => events.filter((e) => e.type === "run.started");
   return { kernel, events, run, started };
@@ -22,7 +21,7 @@ describe("子调用", () => {
     kernel.registerDecorator({
       id: "spy",
       onError: "closed",
-      fn: (r, next) => {
+      fn: (_ctx, r, next) => {
         parentRun = r;
         return next();
       },
@@ -30,15 +29,15 @@ describe("子调用", () => {
     kernel.register({
       name: "demo.parent",
       decorators: ["spy"],
-      impl: async (n: number) => {
-        const r = await call("demo.child", n);
+      impl: async (ctx, n: number) => {
+        const r = await ctx.call("demo.child", n);
         seen.push(`after call: ${parentRun?.status}`);
         return r;
       },
     });
     kernel.register({
       name: "demo.child",
-      impl: async (n: number) => {
+      impl: async (_ctx, n: number) => {
         seen.push(`in child: ${parentRun?.status}`);
         return n + 1;
       },
@@ -63,8 +62,8 @@ describe("子调用", () => {
     kernel.registerDecorator({
       id: "pre",
       onError: "closed",
-      fn: async (_r, next) => {
-        await call("math.double", 1);
+      fn: async (ctx, _r, next) => {
+        await ctx.call("math.double", 1);
         return next();
       },
     });
@@ -77,7 +76,7 @@ describe("子调用", () => {
 
   test("目标不存在：以内核的拒绝返回，不建子 Run，发 call.rejected", async () => {
     const { kernel, events, run, started } = setup();
-    kernel.register({ name: "demo.parent", impl: () => call("nope.nope", 1) });
+    kernel.register({ name: "demo.parent", impl: (ctx) => ctx.call("nope.nope", 1) });
 
     const rejected = { ok: false, by: "kernel", reason: "unknown operation: nope.nope", retryable: false };
     expect(await run("demo.parent", null)).toEqual({ ok: true, value: rejected });
@@ -89,7 +88,7 @@ describe("子调用", () => {
 
   test("深度保险丝：超过最大深度的调用以拒绝返回", async () => {
     const { kernel, events, run, started } = setup({ kernel: { maxDepth: 3 } });
-    kernel.register({ name: "demo.recurse", impl: () => call("demo.recurse", null) });
+    kernel.register({ name: "demo.recurse", impl: (ctx) => ctx.call("demo.recurse", null) });
 
     await run("demo.recurse", null);
     expect(started().map((e) => e.depth)).toEqual([0, 1, 2, 3]);
@@ -102,7 +101,7 @@ describe("子调用", () => {
     const { kernel, run } = setup({ kernel: { maxLiveRuns: 2 } });
     kernel.register({
       name: "demo.fanout",
-      impl: () => Promise.all([call("math.double", 1), call("math.double", 2)]),
+      impl: (ctx) => Promise.all([ctx.call("math.double", 1), ctx.call("math.double", 2)]),
     });
 
     const result = (await run("demo.fanout", null)) as { ok: true; value: Result[] };
@@ -116,8 +115,8 @@ describe("子调用", () => {
     const { kernel, events, run } = setup();
     kernel.register({
       name: "demo.forget",
-      impl: async () => {
-        call("demo.slow", null);
+      impl: async (ctx) => {
+        ctx.call("demo.slow", null);
         return "done";
       },
     });
@@ -130,17 +129,16 @@ describe("子调用", () => {
     ]);
   });
 
-  test("拿不到当前 Run：在 Run 之外、或发起方已退出，都以拒绝返回", async () => {
+  test("发起方已退出后再用它的 ctx 调用：以拒绝返回", async () => {
     const { kernel, run } = setup();
     let late: Promise<Result> | undefined;
     kernel.register({
       name: "demo.leak",
-      impl: async () => {
-        late = new Promise((resolve) => setTimeout(() => resolve(call("math.double", 1)), 5));
+      impl: async (ctx) => {
+        late = new Promise((resolve) => setTimeout(() => resolve(ctx.call("math.double", 1)), 5));
       },
     });
 
-    expect(await call("math.double", 1)).toMatchObject({ ok: false, reason: "call outside of a run" });
     await run("demo.leak", null);
     expect(await late).toMatchObject({ ok: false, reason: "caller has exited" });
   });

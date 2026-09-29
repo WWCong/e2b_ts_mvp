@@ -17,7 +17,7 @@ function setup(defaultDecorators: string[], decorators: Record<string, Decorator
   kernel.register({
     name: "echo.say",
     decorators: own,
-    impl: async (input) => {
+    impl: async (_ctx, input) => {
       echo.calls++;
       return input;
     },
@@ -32,7 +32,7 @@ describe("装饰器链", () => {
     const log: string[] = [];
     const tracing =
       (id: string): Decorator =>
-      async (_run, next) => {
+      async (_ctx, _run, next) => {
         log.push(`${id}>`);
         const r = await next();
         log.push(`<${id}`);
@@ -47,8 +47,8 @@ describe("装饰器链", () => {
 
   test("放行不发事件；改写入参与结果各发一条事件", async () => {
     const { call, decoratorEvents } = setup([], {
-      pass: (_run, next) => next(),
-      upper: async (run, next) => {
+      pass: (_ctx, _run, next) => next(),
+      upper: async (_ctx, run, next) => {
         run.input = String(run.input).toUpperCase();
         const r = await next();
         return r.ok ? { ok: true, value: `${r.value}!` } : r;
@@ -73,7 +73,7 @@ describe("装饰器链", () => {
 
   test("配置冻结：next 之后改入参会出错", async () => {
     const { call, decoratorEvents } = setup([], {
-      late: async (run, next) => {
+      late: async (_ctx, run, next) => {
         const r = await next();
         run.input = "changed";
         return r;
@@ -87,7 +87,7 @@ describe("装饰器链", () => {
   test("onError open：出错跳过这一环，并撤销它对入参的改写", async () => {
     const { call, decoratorEvents } = setup([], {
       flaky: [
-        async (run) => {
+        async (_ctx, run) => {
           run.input = "half-done";
           throw new Error("oops");
         },
@@ -112,7 +112,7 @@ describe("装饰器链", () => {
 
   test("next 只能调一次", async () => {
     const { call, echo } = setup([], {
-      twice: async (_run, next) => {
+      twice: async (_ctx, _run, next) => {
         await next();
         return next();
       },
@@ -124,7 +124,7 @@ describe("装饰器链", () => {
 
   test("引用未注册的装饰器：start 直接报错", () => {
     const kernel = new Kernel({ defaultDecorators: ["ghost"] });
-    kernel.register({ name: "echo.say", impl: async (x) => x });
+    kernel.register({ name: "echo.say", impl: async (_ctx, x) => x });
     expect(() => kernel.start("echo.say", {})).toThrow("unknown decorator: ghost");
   });
 });

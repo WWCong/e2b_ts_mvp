@@ -4,12 +4,13 @@
  */
 
 import type { EventStream } from "./events";
-import { freeze, reject, type Result, type Run } from "./run";
+import { freeze, reject, type Ctx, type Result, type Run } from "./run";
 
 /** open：出错跳过这一环；closed：出错中断 Run。管控类必须 closed */
 export type OnError = "open" | "closed";
 
 /**
+ * ctx 与被装饰 Run 的实现拿到的是同一个，ctx.call 记在被装饰的 Run 名下。
  * next() 执行内层（最终是实现）并返回它的结果，只能调一次；要用结果就存进变量。
  *
  *   放行          return next()
@@ -19,14 +20,15 @@ export type OnError = "open" | "closed";
  *   直接给结果    不调 next，return { ok: true, value }   （如缓存）
  *
  * 拒绝以结果返回，不抛异常；抛异常按 onError 处理。
- * 后续加入：往 run.context 放条目；调 harness.park 挂起。
+ * 后续加入：往 run.context 放条目；经 ctx.call 调 harness.park 挂起。
  */
-export type Decorator = (run: Run, next: () => Promise<Result>) => Promise<Result>;
+export type Decorator = (ctx: Ctx, run: Run, next: () => Promise<Result>) => Promise<Result>;
 
 export type DecoratorDef = { id: string; onError: OnError; fn: Decorator };
 
 /** 依次穿过 chain，走到最内层时冻结配置、执行实现 */
 export function runChain(
+  ctx: Ctx,
   run: Run,
   chain: readonly DecoratorDef[],
   impl: () => Promise<Result>,
@@ -38,7 +40,7 @@ export function runChain(
       freeze(run);
       return impl();
     }
-    return link(run, dec, () => through(i + 1), events);
+    return link(ctx, run, dec, () => through(i + 1), events);
   };
   return through(0);
 }
@@ -48,6 +50,7 @@ export function runChain(
  * 改写、拒绝、出错各发一条事件。
  */
 async function link(
+  ctx: Ctx,
   run: Run,
   dec: DecoratorDef,
   inner: () => Promise<Result>,
@@ -67,7 +70,7 @@ async function link(
   };
 
   try {
-    const result = await dec.fn(run, next);
+    const result = await dec.fn(ctx, run, next);
     if (innerResult && result === (await innerResult)) return result;
     events.emit(
       result.ok

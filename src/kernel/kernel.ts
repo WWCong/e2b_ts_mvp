@@ -2,13 +2,12 @@
  * 内核：注册表、Run 的创建与执行、对外的调用与收割接口。
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
 import { runChain, type DecoratorDef } from "./chain";
 import { EventStream } from "./events";
-import { reject, transition, type Rejected, type Result, type Run } from "./run";
+import { reject, transition, type Ctx, type Rejected, type Result, type Run } from "./run";
 
-/** 恰好一个入参、返回 Promise */
-export type OperationImpl = (input: any) => Promise<unknown>;
+/** ctx 之外恰好一个入参、返回 Promise；ctx 不算入参，不进 schema */
+export type OperationImpl = (ctx: Ctx, input: any) => Promise<unknown>;
 
 /**
  * 注册表里的一项 Operation。
@@ -31,16 +30,12 @@ export type KernelConfig = {
 
 const FUSE_DEFAULTS = { maxDepth: 32, maxLiveRuns: 1024 };
 
-/** 在途 Run 的运行时记录，经 AsyncLocalStorage 绑定为当前 Run（6.2） */
-export type Frame = {
-  kernel: Kernel;
+/** 在途 Run 的运行时记录 */
+type Frame = {
   run: Run;
   /** 还没返回的子调用 */
   pending: Set<Promise<Result>>;
 };
-
-/** 内核执行实现与装饰器时绑定当前 Run。后续加入：调用来自 Operation 本体还是哪个装饰器 */
-export const current = new AsyncLocalStorage<Frame>();
 
 /** 通过检查、待执行的 Run */
 type Admitted = { run: Run; op: Operation; chain: DecoratorDef[] };
@@ -88,10 +83,10 @@ export class Kernel {
   }
 
   /**
-   * harness.call 的实现：发起 frame.run 的子调用并等它返回。
+   * ctx.call 的实现：发起 frame.run 的子调用并等它返回。
    * 有子调用没返回时，发起方处于 waiting。
    */
-  callChild(frame: Frame, name: string, input: unknown): Promise<Result> {
+  private callChild(frame: Frame, name: string, input: unknown): Promise<Result> {
     const caller = frame.run;
     const admitted =
       caller.status === "exited" ? reject("kernel", "caller has exited") : this.admit(name, input, caller);
@@ -148,8 +143,9 @@ export class Kernel {
       chain: chain.map((d) => d.id),
     });
 
-    const frame: Frame = { kernel: this, run, pending: new Set() };
-    const result = await current.run(frame, () => runChain(run, chain, () => this.invoke(run, op), this.events));
+    const frame: Frame = { run, pending: new Set() };
+    const ctx: Ctx = { call: (name, input) => this.callChild(frame, name, input) };
+    const result = await runChain(ctx, run, chain, () => this.invoke(ctx, run, op), this.events);
     // 实现没等完的子调用，等它们都返回再退出，不留悬空的子 Run
     while (frame.pending.size > 0) await Promise.all(frame.pending);
 
@@ -160,9 +156,9 @@ export class Kernel {
   }
 
   /** 实现抛出的异常也转成结果，不留悬空调用 */
-  private async invoke(run: Run, op: Operation): Promise<Result> {
+  private async invoke(ctx: Ctx, run: Run, op: Operation): Promise<Result> {
     try {
-      return { ok: true, value: await op.impl(run.input) };
+      return { ok: true, value: await op.impl(ctx, run.input) };
     } catch (err) {
       return reject(run.operation, err);
     }
