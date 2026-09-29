@@ -46,21 +46,23 @@ describe("ctx.tools()", () => {
     });
   });
 
-  test("装饰器拿到的 ctx.tools() 为空", async () => {
+  test("装饰器的 ctx 没有 tools()：类型上就不给", async () => {
     const kernel = setup();
-    let tools: ToolSpec[] | undefined;
+    let hasTools: boolean | undefined;
     kernel.registerDecorator({
       id: "demo.peek",
       onError: "closed",
       fn: async (ctx, _run, next) => {
-        tools = ctx.tools();
+        // @ts-expect-error 装饰器里写 ctx.tools 编译不过
+        ctx.tools;
+        hasTools = "tools" in ctx;
         return next();
       },
     });
     kernel.register({ name: "demo.agent", input: z.null(), decorators: ["demo.peek"], impl: async () => null });
     await kernel.reap(kernel.start("demo.agent", null));
 
-    expect(tools).toEqual([]);
+    expect(hasTools).toBe(false);
   });
 
   test("公开的 Operation 没写 usage、或入参转不成 JSON Schema：注册时就报错", () => {

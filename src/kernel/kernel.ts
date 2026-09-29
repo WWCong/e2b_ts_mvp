@@ -3,7 +3,7 @@
  */
 
 import { z } from "zod";
-import { runChain, type DecoratorDef } from "./chain";
+import { runChain, type DecoratorCtx, type DecoratorDef } from "./chain";
 import { EventStream } from "./events";
 import { reject, transition, type Ctx, type Rejected, type Result, type Run, type ToolSpec } from "./run";
 import { inSurface, type Surface } from "./surface";
@@ -218,7 +218,7 @@ export class Kernel {
       signal,
       tools: () => this.toolsIn(op),
     };
-    const decoratorCtx: Ctx = { call: (name, input) => this.callChild(live, name, input), signal, tools: () => [] };
+    const decoratorCtx: DecoratorCtx = { call: (name, input) => this.callChild(live, name, input), signal };
 
     const settle = async () => {
       const result = await runChain(decoratorCtx, run, chain, () => this.invoke(ctx, run, op), this.events);

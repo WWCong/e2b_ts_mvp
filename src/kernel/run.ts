@@ -22,7 +22,7 @@ export type Ctx = {
   call(name: string, input: unknown): Promise<Result>;
   /** Run 被杀（取消或关停）时 abort。传给 fetch、子进程等支持它的 API，IO 当场中止 */
   signal: AbortSignal;
-  /** 这个 Run 能力面里的公开 Operation，按名字排序（逐字节稳定）；在装饰器里为空（8.1） */
+  /** 这个 Run 能力面里的公开 Operation，按名字排序（逐字节稳定）。装饰器的 ctx 没有它（8.1） */
   tools(): ToolSpec[];
 };
 
