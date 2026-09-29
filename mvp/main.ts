@@ -6,8 +6,8 @@
 
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { Kernel } from "./kernel/kernel";
-import { loadPlugin } from "./kernel/loader";
+import { Kernel } from "../src/kernel/kernel";
+import { loadPlugin } from "../src/kernel/loader";
 import { printEvent } from "./trace";
 
 const prompt = process.argv.slice(2).join(" ");

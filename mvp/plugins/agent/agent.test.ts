@@ -11,9 +11,9 @@ import {
   type ToolResultMessage,
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
-import type { HarnessEvent } from "../../kernel/events";
-import { Kernel } from "../../kernel/kernel";
-import { loadPlugin } from "../../kernel/loader";
+import type { HarnessEvent } from "../../../src/kernel/events";
+import { Kernel } from "../../../src/kernel/kernel";
+import { loadPlugin } from "../../../src/kernel/loader";
 import { models } from "../model/models";
 
 const faux = fauxProvider();

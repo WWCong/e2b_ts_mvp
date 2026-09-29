@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { HarnessEvent } from "../../kernel/events";
-import { Kernel } from "../../kernel/kernel";
-import { loadPlugin } from "../../kernel/loader";
+import type { HarnessEvent } from "../../../src/kernel/events";
+import { Kernel } from "../../../src/kernel/kernel";
+import { loadPlugin } from "../../../src/kernel/loader";
 
 let workspace: string;
 

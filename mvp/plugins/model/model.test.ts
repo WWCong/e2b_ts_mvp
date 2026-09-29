@@ -8,9 +8,9 @@ import {
   type SystemMessage,
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
-import { Kernel } from "../../kernel/kernel";
-import { loadPlugin } from "../../kernel/loader";
-import type { ToolSpec } from "../../kernel/run";
+import { Kernel } from "../../../src/kernel/kernel";
+import { loadPlugin } from "../../../src/kernel/loader";
+import type { ToolSpec } from "../../../src/kernel/run";
 import { models } from "./models";
 
 const faux = fauxProvider();

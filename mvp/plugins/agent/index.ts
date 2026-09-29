@@ -7,8 +7,8 @@
 
 import type { AssistantMessage, Message, ToolCall } from "@earendil-works/pi-ai";
 import { z } from "zod";
-import { op } from "../../kernel/harness";
-import type { Result } from "../../kernel/run";
+import { op } from "../../../src/kernel/harness";
+import type { Result } from "../../../src/kernel/run";
 
 const PERSONA = "你是工作区助手。需要查看或修改文件时使用工具；做完后用中文简要回答用户。";
 const MAX_TURNS = 20;

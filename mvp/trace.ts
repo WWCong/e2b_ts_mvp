@@ -3,7 +3,7 @@
  * 方案里事件由投递插件送往观测平台（9.2）；这里只是入口程序的一个订阅者。
  */
 
-import type { HarnessEvent } from "./kernel/events";
+import type { HarnessEvent } from "../src/kernel/events";
 
 /** runId → 深度，用来缩进；Run 结束后移除 */
 const depths = new Map<string, number>();

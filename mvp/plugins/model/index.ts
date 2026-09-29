@@ -6,8 +6,8 @@
 
 import type { Message, Tool, ToolCall } from "@earendil-works/pi-ai";
 import { z } from "zod";
-import { op } from "../../kernel/harness";
-import type { ToolSpec } from "../../kernel/run";
+import { op } from "../../../src/kernel/harness";
+import type { ToolSpec } from "../../../src/kernel/run";
 import { currentModel, models } from "./models";
 
 const toolSpec = z.object({

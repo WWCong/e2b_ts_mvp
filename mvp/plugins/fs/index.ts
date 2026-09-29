@@ -6,7 +6,7 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { z } from "zod";
-import { decorator, op } from "../../kernel/harness";
+import { decorator, op } from "../../../src/kernel/harness";
 
 const relPath = z.string().describe("工作区内的相对路径");
 
