@@ -2,6 +2,7 @@
  * 内核：注册表、Run 的创建与执行、对外的调用与收割接口。
  */
 
+import { z } from "zod";
 import { runChain, type DecoratorDef } from "./chain";
 import { EventStream } from "./events";
 import { reject, transition, type Ctx, type Rejected, type Result, type Run } from "./run";
@@ -10,13 +11,15 @@ import { reject, transition, type Ctx, type Rejected, type Result, type Run } fr
 export type OperationImpl = (ctx: Ctx, input: any) => Promise<unknown>;
 
 /**
- * 注册表里的一项 Operation。
- * 后续由包装载器从导出函数与 JSDoc 生成，并加入 usage、limits、@only / @exclude、public。
+ * 注册表里的一项 Operation。插件用 op() 声明，装载器补上名字（harness.ts、loader.ts）。
+ * 后续加入：usage、limits、only / exclude、public。
  */
 export type Operation = {
   name: string;
+  /** 入参契约：建 Run 前按它校验，实现拿到解析后的值；也是交给模型的工具 schema（z.toJSONSchema） */
+  input: z.ZodType;
   impl: OperationImpl;
-  /** 自选装饰器（@decorators），按书写顺序从外到内 */
+  /** 自选装饰器，按书写顺序从外到内 */
   decorators?: string[];
 };
 
@@ -99,7 +102,8 @@ export class Kernel {
   }
 
   /**
-   * 建 Run 前的检查，通过则建出 Run；不通过以拒绝返回，不建 Run。
+   * 建 Run 前的检查（目标存在、保险丝、链能解析、入参符合 schema），通过则建出 Run；
+   * 不通过以拒绝返回，不建 Run。
    * 后续加入：能力面检查。
    */
   private admit(name: string, input: unknown, parent?: Run): Admitted | Rejected {
@@ -118,7 +122,20 @@ export class Kernel {
       chain.push(def);
     }
 
-    const run: Run = { runId: crypto.randomUUID(), operation: name, input, status: "init", depth, parent: parent?.runId };
+    // 入参不对是「这次没写对」，改了能再试
+    const parsed = op.input.safeParse(input);
+    if (!parsed.success) {
+      return { ...reject("kernel", `invalid input for ${name}:\n${z.prettifyError(parsed.error)}`), retryable: true };
+    }
+
+    const run: Run = {
+      runId: crypto.randomUUID(),
+      operation: name,
+      input: parsed.data,
+      status: "init",
+      depth,
+      parent: parent?.runId,
+    };
     return { run, op, chain };
   }
 

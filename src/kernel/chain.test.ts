@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 import type { Decorator, OnError } from "./chain";
 import type { HarnessEvent } from "./events";
 import { Kernel } from "./kernel";
@@ -16,6 +17,7 @@ function setup(defaultDecorators: string[], decorators: Record<string, Decorator
   const own = Object.keys(decorators).filter((id) => !defaultDecorators.includes(id));
   kernel.register({
     name: "echo.say",
+    input: z.string(),
     decorators: own,
     impl: async (_ctx, input) => {
       echo.calls++;
@@ -124,7 +126,7 @@ describe("装饰器链", () => {
 
   test("引用未注册的装饰器：start 直接报错", () => {
     const kernel = new Kernel({ defaultDecorators: ["ghost"] });
-    kernel.register({ name: "echo.say", impl: async (_ctx, x) => x });
+    kernel.register({ name: "echo.say", input: z.any(), impl: async (_ctx, x) => x });
     expect(() => kernel.start("echo.say", {})).toThrow("unknown decorator: ghost");
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 import type { HarnessEvent } from "./events";
 import { Kernel } from "./kernel";
 import type { Rejected } from "./run";
@@ -7,9 +8,14 @@ function setup() {
   const kernel = new Kernel();
   const events: HarnessEvent[] = [];
   kernel.events.subscribe((e) => events.push(e));
-  kernel.register({ name: "math.double", impl: async (_ctx, input: { n: number }) => ({ n: input.n * 2 }) });
+  kernel.register({
+    name: "math.double",
+    input: z.object({ n: z.number() }),
+    impl: async (_ctx, input: { n: number }) => ({ n: input.n * 2 }),
+  });
   kernel.register({
     name: "demo.fail",
+    input: z.object({}),
     impl: async () => {
       throw new Error("boom");
     },
@@ -52,7 +58,22 @@ describe("Kernel", () => {
   test("未注册的名字与重复注册都直接报错", () => {
     const { kernel } = setup();
     expect(() => kernel.start("nope.nope", {})).toThrow("unknown operation");
-    expect(() => kernel.register({ name: "math.double", impl: async () => 0 })).toThrow("duplicate operation");
+    expect(() => kernel.register({ name: "math.double", input: z.any(), impl: async () => 0 })).toThrow("duplicate operation");
+  });
+
+  test("入参按 schema 校验：不符合时 start 报错；实现拿到解析后的值", async () => {
+    const { kernel } = setup();
+    kernel.register({
+      name: "demo.greet",
+      input: z.object({ name: z.string(), times: z.number().default(1) }),
+      impl: async (_ctx, input) => input,
+    });
+
+    expect(() => kernel.start("demo.greet", { name: 1 })).toThrow("invalid input for demo.greet");
+    expect(await kernel.reap(kernel.start("demo.greet", { name: "张三", extra: true }))).toEqual({
+      ok: true,
+      value: { name: "张三", times: 1 },
+    });
   });
 
   test("订阅者出错不影响 Run 与其他订阅者", async () => {

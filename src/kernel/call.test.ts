@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 import type { HarnessEvent } from "./events";
 import { Kernel, type KernelConfig } from "./kernel";
 import type { Result, Run } from "./run";
@@ -7,7 +8,7 @@ function setup(config: KernelConfig = {}) {
   const kernel = new Kernel(config);
   const events: HarnessEvent[] = [];
   kernel.events.subscribe((e) => events.push(e));
-  kernel.register({ name: "math.double", impl: async (_ctx, n: number) => n * 2 });
+  kernel.register({ name: "math.double", input: z.number(), impl: async (_ctx, n: number) => n * 2 });
   const run = (name: string, input: unknown) => kernel.reap(kernel.start(name, input));
   const started = () => events.filter((e) => e.type === "run.started");
   return { kernel, events, run, started };
@@ -28,6 +29,7 @@ describe("子调用", () => {
     });
     kernel.register({
       name: "demo.parent",
+      input: z.number(),
       decorators: ["spy"],
       impl: async (ctx, n: number) => {
         const r = await ctx.call("demo.child", n);
@@ -37,6 +39,7 @@ describe("子调用", () => {
     });
     kernel.register({
       name: "demo.child",
+      input: z.number(),
       impl: async (_ctx, n: number) => {
         seen.push(`in child: ${parentRun?.status}`);
         return n + 1;
@@ -67,7 +70,7 @@ describe("子调用", () => {
         return next();
       },
     });
-    kernel.register({ name: "demo.noop", decorators: ["pre"], impl: async () => null });
+    kernel.register({ name: "demo.noop", input: z.null(), decorators: ["pre"], impl: async () => null });
 
     await run("demo.noop", null);
     const [outer, inner] = started();
@@ -76,7 +79,7 @@ describe("子调用", () => {
 
   test("目标不存在：以内核的拒绝返回，不建子 Run，发 call.rejected", async () => {
     const { kernel, events, run, started } = setup();
-    kernel.register({ name: "demo.parent", impl: (ctx) => ctx.call("nope.nope", 1) });
+    kernel.register({ name: "demo.parent", input: z.null(), impl: (ctx) => ctx.call("nope.nope", 1) });
 
     const rejected = { ok: false, by: "kernel", reason: "unknown operation: nope.nope", retryable: false };
     expect(await run("demo.parent", null)).toEqual({ ok: true, value: rejected });
@@ -86,9 +89,20 @@ describe("子调用", () => {
     );
   });
 
+  test("入参不符合 schema：以内核的拒绝返回，retryable 为 true", async () => {
+    const { kernel, run, started } = setup();
+    kernel.register({ name: "demo.parent", input: z.null(), impl: (ctx) => ctx.call("math.double", "two") });
+
+    expect(await run("demo.parent", null)).toMatchObject({
+      ok: true,
+      value: { ok: false, by: "kernel", reason: expect.stringContaining("invalid input for math.double"), retryable: true },
+    });
+    expect(started()).toHaveLength(1);
+  });
+
   test("深度保险丝：超过最大深度的调用以拒绝返回", async () => {
     const { kernel, events, run, started } = setup({ kernel: { maxDepth: 3 } });
-    kernel.register({ name: "demo.recurse", impl: (ctx) => ctx.call("demo.recurse", null) });
+    kernel.register({ name: "demo.recurse", input: z.null(), impl: (ctx) => ctx.call("demo.recurse", null) });
 
     await run("demo.recurse", null);
     expect(started().map((e) => e.depth)).toEqual([0, 1, 2, 3]);
@@ -101,6 +115,7 @@ describe("子调用", () => {
     const { kernel, run } = setup({ kernel: { maxLiveRuns: 2 } });
     kernel.register({
       name: "demo.fanout",
+      input: z.null(),
       impl: (ctx) => Promise.all([ctx.call("math.double", 1), ctx.call("math.double", 2)]),
     });
 
@@ -115,12 +130,13 @@ describe("子调用", () => {
     const { kernel, events, run } = setup();
     kernel.register({
       name: "demo.forget",
+      input: z.null(),
       impl: async (ctx) => {
         ctx.call("demo.slow", null);
         return "done";
       },
     });
-    kernel.register({ name: "demo.slow", impl: () => Bun.sleep(5) });
+    kernel.register({ name: "demo.slow", input: z.null(), impl: () => Bun.sleep(5) });
 
     expect(await run("demo.forget", null)).toEqual({ ok: true, value: "done" });
     expect(events.filter((e) => e.type === "run.exited").map((e) => e.operation)).toEqual([
@@ -134,6 +150,7 @@ describe("子调用", () => {
     let late: Promise<Result> | undefined;
     kernel.register({
       name: "demo.leak",
+      input: z.null(),
       impl: async (ctx) => {
         late = new Promise((resolve) => setTimeout(() => resolve(ctx.call("math.double", 1)), 5));
       },
