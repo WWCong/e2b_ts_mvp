@@ -37,15 +37,15 @@ const FUSE_DEFAULTS = { maxDepth: 32, maxLiveRuns: 1024 };
 /** 通过检查、待执行的 Run */
 type Admitted = { run: Run; op: Operation; chain: DecoratorDef[] };
 
-/** 在途 Run 的内核侧记录；Run 退出或被取消后移除 */
+/** 在途 Run 的内核侧记录；Run 退出或被杀后移除 */
 type LiveRun = {
   run: Run;
   parent?: LiveRun;
   /** 在途的子 Run；不为空时 run 处于 waiting */
   children: Set<LiveRun>;
-  /** Run 的结果：正常退出与被取消，谁先到算谁 */
+  /** Run 的结果：正常退出与被杀，谁先到算谁 */
   done: PromiseWithResolvers<Result>;
-  /** 被取消时 abort，即 ctx.signal */
+  /** 被杀时 abort，即 ctx.signal */
   abort: AbortController;
 };
 
@@ -207,7 +207,7 @@ export class Kernel {
       const result = await runChain(decoratorCtx, run, chain, () => this.invoke(ctx, run, op), this.events);
       // 实现没等完的子调用，等它们都返回再退出，不留悬空的子 Run
       while (live.children.size > 0) await Promise.all([...live.children].map((c) => c.done.promise));
-      // 已被取消：不理会 ctx.signal 的实现照样跑完（JS 无法抢占），但结果作废
+      // 已被杀：不理会 ctx.signal 的实现照样跑完（JS 无法抢占），但结果作废
       if (run.status === "killed") return;
 
       transition(run, "exited");
@@ -229,7 +229,7 @@ export class Kernel {
     live.done.resolve(reject("kernel", reason));
   }
 
-  /** Run 退出或被取消后从内核移除；父不再等任何子 Run 时回到 running */
+  /** Run 退出或被杀后从内核移除；父不再等任何子 Run 时回到 running */
   private forget(live: LiveRun): void {
     this.lives.delete(live.run.runId);
     const { parent } = live;

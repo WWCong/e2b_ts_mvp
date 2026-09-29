@@ -17,7 +17,7 @@ export type Result = { ok: true; value: unknown } | Rejected;
 export type Ctx = {
   /** 发起这个 Run 的子调用并等它返回；拒绝作为结果返回（5.3） */
   call(name: string, input: unknown): Promise<Result>;
-  /** Run 被取消时 abort。传给 fetch、子进程等支持它的 API，取消时 IO 当场中止 */
+  /** Run 被杀（取消或关停）时 abort。传给 fetch、子进程等支持它的 API，IO 当场中止 */
   signal: AbortSignal;
 };
 
