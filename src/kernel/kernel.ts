@@ -5,7 +5,7 @@
 import { z } from "zod";
 import { runChain, type DecoratorDef } from "./chain";
 import { EventStream } from "./events";
-import { reject, transition, type Ctx, type Rejected, type Result, type Run } from "./run";
+import { reject, transition, type Ctx, type Rejected, type Result, type Run, type ToolSpec } from "./run";
 import { inSurface, type Surface } from "./surface";
 
 /** ctx 之外恰好一个入参、返回 Promise；ctx 不算入参，不进 schema */
@@ -13,10 +13,14 @@ export type OperationImpl = (ctx: Ctx, input: any) => Promise<unknown>;
 
 /**
  * 注册表里的一项 Operation。插件用 op() 声明，装载器补上名字（harness.ts、loader.ts）。
- * 后续加入：usage、limits、public。
+ * 后续加入：limits。
  */
 export type Operation = Surface & {
   name: string;
+  /** 用法说明：交给模型时即工具的 description */
+  usage?: string;
+  /** 公开的才会作为工具交给模型（7.2）；缺省不公开 */
+  public?: boolean;
   /** 入参契约：建 Run 前按它校验，实现拿到解析后的值；也是交给模型的工具 schema（z.toJSONSchema） */
   input: z.ZodType;
   impl: OperationImpl;
@@ -53,6 +57,8 @@ export class Kernel {
   readonly events = new EventStream();
   private readonly operations = new Map<string, Operation>();
   private readonly decorators = new Map<string, DecoratorDef>();
+  /** 公开 Operation 的工具描述，注册时生成 */
+  private readonly tools = new Map<string, ToolSpec>();
   /** runId → 退出结果。结果保留到调用方收割，收割后移除（3.4） */
   private readonly exits = new Map<string, Promise<Result>>();
   /** runId → 在途 Run */
@@ -64,8 +70,15 @@ export class Kernel {
     this.fuse = { ...FUSE_DEFAULTS, ...config.kernel };
   }
 
+  /** 公开的 Operation 须写 usage；入参 schema 转不成 JSON Schema 的（如 z.date()）在这里就报错 */
   register(op: Operation): void {
     if (this.operations.has(op.name)) throw new Error(`duplicate operation: ${op.name}`);
+    if (op.public) {
+      if (!op.usage) throw new Error(`public operation needs usage: ${op.name}`);
+      // io: "input" 按调用方要填的形状生成：带默认值的字段是可选的
+      const inputSchema = z.toJSONSchema(op.input, { io: "input" }) as Record<string, unknown>;
+      this.tools.set(op.name, { name: op.name, description: op.usage, inputSchema });
+    }
     this.operations.set(op.name, op);
   }
 
@@ -200,8 +213,12 @@ export class Kernel {
 
     // 实现的调用查它自己的能力面；装饰器的调用同样记在这个 Run 名下，但不查它的能力面（4.1）
     const { signal } = live.abort;
-    const ctx: Ctx = { call: (name, input) => this.callChild(live, name, input, op), signal };
-    const decoratorCtx: Ctx = { call: (name, input) => this.callChild(live, name, input), signal };
+    const ctx: Ctx = {
+      call: (name, input) => this.callChild(live, name, input, op),
+      signal,
+      tools: () => this.toolsIn(op),
+    };
+    const decoratorCtx: Ctx = { call: (name, input) => this.callChild(live, name, input), signal, tools: () => [] };
 
     const settle = async () => {
       const result = await runChain(decoratorCtx, run, chain, () => this.invoke(ctx, run, op), this.events);
@@ -227,6 +244,13 @@ export class Kernel {
     for (const child of [...live.children]) this.kill(child, reason);
     this.forget(live);
     live.done.resolve(reject("kernel", reason));
+  }
+
+  /** 能力面里的公开 Operation，按名字排序 */
+  private toolsIn(surface: Surface): ToolSpec[] {
+    return [...this.tools.values()]
+      .filter((tool) => inSurface(surface, tool.name))
+      .sort((a, b) => (a.name < b.name ? -1 : 1));
   }
 
   /** Run 退出或被杀后从内核移除；父不再等任何子 Run 时回到 running */

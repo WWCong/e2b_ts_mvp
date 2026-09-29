@@ -11,13 +11,17 @@ import { decorator, op } from "../../kernel/harness";
 const relPath = z.string().describe("工作区内的相对路径");
 
 export const read = op({
+  usage: "读取工作区里一个文本文件的全部内容",
+  public: true,
   input: z.object({ path: relPath }),
   decorators: ["fs.pathGuard"],
   impl: (ctx, input) => readFile(inWorkspace(input.path), { encoding: "utf8", signal: ctx.signal }),
 });
 
 export const write = op({
-  input: z.object({ path: relPath, content: z.string() }),
+  usage: "把内容写入工作区里的文件：文件已存在则覆盖，目录不存在则自动创建",
+  public: true,
+  input: z.object({ path: relPath, content: z.string().describe("要写入的完整内容") }),
   decorators: ["fs.pathGuard"],
   impl: async (ctx, input) => {
     const file = inWorkspace(input.path);
@@ -28,6 +32,8 @@ export const write = op({
 });
 
 export const list = op({
+  usage: "列出工作区里一个目录下的文件与子目录",
+  public: true,
   input: z.object({ path: relPath.default(".") }),
   decorators: ["fs.pathGuard"],
   impl: async (_ctx, input) => {

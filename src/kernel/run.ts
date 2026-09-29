@@ -10,6 +10,9 @@ export type Rejected = { ok: false; by: string; reason: string; retryable: boole
 
 export type Result = { ok: true; value: unknown } | Rejected;
 
+/** 交给模型的一项工具：公开 Operation 的名字、说明（usage）与入参 JSON Schema */
+export type ToolSpec = { name: string; description: string; inputSchema: Record<string, unknown> };
+
 /**
  * 内核交给实现与装饰器的句柄，绑定在一个 Run 上。
  * 后续加入：spawn、emit，以及 runId、depth、replaying 等只读信息。
@@ -19,6 +22,8 @@ export type Ctx = {
   call(name: string, input: unknown): Promise<Result>;
   /** Run 被杀（取消或关停）时 abort。传给 fetch、子进程等支持它的 API，IO 当场中止 */
   signal: AbortSignal;
+  /** 这个 Run 能力面里的公开 Operation，按名字排序（逐字节稳定）；在装饰器里为空（8.1） */
+  tools(): ToolSpec[];
 };
 
 /** 把异常或原因转成拒绝结果 */
