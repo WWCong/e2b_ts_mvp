@@ -138,3 +138,36 @@ describe("取消", () => {
     expect(kernel.cancel("nope")).toBe(false);
   });
 });
+
+describe("关停", () => {
+  test("不再接受新的外部调用；在途的树在超时前收敛就正常退出，树内的子调用照常进行", async () => {
+    const { kernel, gate } = setup();
+    kernel.register({
+      name: "demo.later",
+      input: z.null(),
+      impl: async (ctx) => {
+        await gate.promise;
+        return ctx.call("demo.child", null);
+      },
+    });
+    const root = kernel.start("demo.later", null);
+
+    const stopping = kernel.stop(1_000);
+    expect(() => kernel.start("demo.later", null)).toThrow("harness is stopping");
+    gate.resolve();
+    await stopping;
+    expect(await kernel.reap(root)).toEqual({ ok: true, value: { ok: true, value: "late" } });
+  });
+
+  test("到超时仍在途的树按 killed 处理，原因是 shutdown", async () => {
+    const { kernel, events } = setup();
+    const root = kernel.start("demo.parent", null);
+
+    await kernel.stop(5);
+    expect(await kernel.reap(root)).toEqual({ ok: false, by: "kernel", reason: "shutdown", retryable: false });
+    expect(events.filter((e) => e.type === "run.killed").map((e) => [e.operation, e.reason])).toEqual([
+      ["demo.parent", "shutdown"],
+      ["demo.child", "shutdown"],
+    ]);
+  });
+});

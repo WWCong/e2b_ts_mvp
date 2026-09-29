@@ -1,5 +1,5 @@
 /**
- * 内核：注册表、Run 的创建与执行、对外的调用、收割与取消接口。
+ * 内核：注册表、Run 的创建与执行、对外的调用、收割、取消与关停接口。
  */
 
 import { z } from "zod";
@@ -58,6 +58,7 @@ export class Kernel {
   /** runId → 在途 Run */
   private readonly lives = new Map<string, LiveRun>();
   private readonly fuse: { maxDepth: number; maxLiveRuns: number };
+  private stopping = false;
 
   constructor(private readonly config: KernelConfig = {}) {
     this.fuse = { ...FUSE_DEFAULTS, ...config.kernel };
@@ -76,6 +77,7 @@ export class Kernel {
 
   /** 对外接口·调用：按名字起一棵 Run 树，返回根 Run 的 runId */
   start(name: string, input: unknown): string {
+    if (this.stopping) throw new Error("harness is stopping");
     const admitted = this.admit(name, input);
     if ("ok" in admitted) throw new Error(admitted.reason);
     this.exits.set(admitted.run.runId, this.execute(admitted));
@@ -99,8 +101,23 @@ export class Kernel {
   cancel(runId: string): boolean {
     const live = this.lives.get(runId);
     if (!live) return false;
-    this.kill(live);
+    this.kill(live, "cancelled");
     return true;
+  }
+
+  /**
+   * 对外接口·关停（9.2）：不再接受新的外部调用，等在途的 Run 树收敛；到 timeoutMs 仍在途的按 killed 处理。
+   * 在途树内部的子调用照常进行，好让它们收敛。
+   * 后续加入：harness.stopping 责任链（投递插件 flush、各插件清理）；空闲的树落快照。
+   */
+  async stop(timeoutMs: number): Promise<void> {
+    this.stopping = true;
+    const roots = [...this.lives.values()].filter((live) => !live.parent);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => (timer = setTimeout(resolve, timeoutMs)));
+    await Promise.race([Promise.all(roots.map((live) => live.done.promise)), timeout]);
+    clearTimeout(timer);
+    for (const live of roots) if (this.lives.has(live.run.runId)) this.kill(live, "shutdown");
   }
 
   /**
@@ -202,14 +219,14 @@ export class Kernel {
     return live.done.promise;
   }
 
-  /** 取消 live 及其子孙：自己先转 killed 并 abort 它的 signal，再取消子 Run；等它的一方拿到内核的拒绝结果 */
-  private kill(live: LiveRun): void {
+  /** 杀掉 live 及其子孙：自己先转 killed 并 abort 它的 signal，再杀子 Run；等它的一方拿到内核的拒绝结果 */
+  private kill(live: LiveRun, reason: "cancelled" | "shutdown"): void {
     transition(live.run, "killed");
-    this.events.emit({ type: "run.killed", runId: live.run.runId, operation: live.run.operation });
+    this.events.emit({ type: "run.killed", runId: live.run.runId, operation: live.run.operation, reason });
     live.abort.abort();
-    for (const child of [...live.children]) this.kill(child);
+    for (const child of [...live.children]) this.kill(child, reason);
     this.forget(live);
-    live.done.resolve(reject("kernel", "cancelled"));
+    live.done.resolve(reject("kernel", reason));
   }
 
   /** Run 退出或被取消后从内核移除；父不再等任何子 Run 时回到 running */
@@ -223,8 +240,8 @@ export class Kernel {
 
   /** 实现抛出的异常也转成结果，不留悬空调用 */
   private async invoke(ctx: Ctx, run: Run, op: Operation): Promise<Result> {
-    // 装饰器还没走到实现时 Run 就被取消了：不再开始执行实现
-    if (run.status === "killed") return reject("kernel", "cancelled");
+    // 装饰器还没走到实现时 Run 就被杀了：不再开始执行实现（结果本就作废）
+    if (run.status === "killed") return reject("kernel", "killed");
     try {
       return { ok: true, value: await op.impl(ctx, run.input) };
     } catch (err) {

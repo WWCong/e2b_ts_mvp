@@ -13,8 +13,8 @@ export type EventBody =
   /** chain：这个 Run 的装饰器链序，从外到内 */
   | { type: "run.started"; runId: string; operation: string; input: unknown; parent?: string; depth: number; chain: string[] }
   | { type: "run.exited"; runId: string; operation: string; result: Result }
-  /** 被取消（自己或祖先被取消）；之后这个 Run 不再有 run.exited */
-  | { type: "run.killed"; runId: string; operation: string }
+  /** 被杀（自己或祖先被取消，或关停）；之后这个 Run 不再有 run.exited。reason：cancelled 或 shutdown */
+  | { type: "run.killed"; runId: string; operation: string; reason: string }
   /** 内核在建子 Run 之前就拒绝了这次调用（目标不存在、不在能力面、超出保险丝、入参不符等）；runId 是发起方 */
   | { type: "call.rejected"; runId: string; target: string; input: unknown; result: Rejected }
   | ({ type: "decorator.rewrote"; phase: "input" | "result"; value: unknown } & Link)
