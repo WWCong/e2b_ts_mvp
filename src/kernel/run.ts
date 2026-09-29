@@ -2,7 +2,7 @@
  * Run：Operation 的一次执行，由状态机管理（3.4）。
  */
 
-/** waiting：在等子 Run 或等 unpark（harness_park）；killed：被杀（取消或关停） */
+/** waiting：在等子 Run 或等 unpark（ctx.park）；killed：被杀（取消或关停） */
 export type RunStatus = "init" | "running" | "waiting" | "exited" | "killed";
 
 /** 拒绝结果：管控短路与执行失败都以调用结果返回，不抛异常（R16） */
@@ -18,14 +18,18 @@ export type ToolSpec = { name: string; description: string; inputSchema: Record<
  * 后续加入：spawn、emit，以及 depth、replaying 等只读信息。
  */
 export type Ctx = {
-  /** 这个 Run 的 runId */
-  runId: string;
   /** 发起这个 Run 的子调用并等它返回；拒绝作为结果返回（5.3） */
   call(name: string, input: unknown): Promise<Result>;
   /** Run 被杀（取消或关停）时 abort。传给 fetch、子进程等支持它的 API，IO 当场中止 */
   signal: AbortSignal;
   /** 这个 Run 能力面里的公开 Operation，按名字排序（逐字节稳定）。装饰器的 ctx 没有它（8.1） */
   tools(): ToolSpec[];
+  /**
+   * 挂起这个 Run：转 waiting、发 park.opened，等外部经 unpark 送来一个符合 schema（JSON Schema）的值并返回它；
+   * 被撤回时抛异常。payload 随 park.opened 交给外部，内核不解释（3.5）。
+   * 一般不直接用，而是调 park Operation（stdlib_park），好让装饰器看得到这次挂起。装饰器的 ctx 没有它。
+   */
+  park(req: { schema: Record<string, unknown>; payload: unknown }): Promise<unknown>;
 };
 
 /** 把异常或原因转成拒绝结果 */

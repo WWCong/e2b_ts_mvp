@@ -1,5 +1,6 @@
 /**
- * 内核：注册表、Run 的创建与执行、挂起（harness_park），对外的调用、收割、送值与撤回、取消与关停接口。
+ * 内核：注册表、Run 的创建与执行、挂起，对外的调用、收割、送值与撤回、取消与关停接口。
+ * 内核不注册任何 Operation，注册表里的全部来自装载的插件；park 的 Operation 形式在 stdlib 插件里。
  */
 
 import { z } from "zod";
@@ -39,11 +40,8 @@ export type KernelConfig = {
 
 const FUSE_DEFAULTS = { maxDepth: 32, maxLiveRuns: 1024 };
 
-/** harness_park 的入参：值要符合的 JSON Schema，与交给外部、内核不解释的 payload（3.5） */
-const PARK_INPUT = z.object({ schema: z.record(z.string(), z.unknown()), payload: z.unknown() });
-
-/** 等待中的 park：送来的值按 schema 校验，经 settle 交给等待的实现 */
-type Park = { schema: z.ZodType; settle: (result: Result) => void };
+/** 等待中的 park：送来的值按 schema 校验；closed 在关闭时带着产出兑现 */
+type Park = { schema: z.ZodType; closed: PromiseWithResolvers<Result> };
 
 /** 通过检查、待执行的 Run */
 type Admitted = { run: Run; op: Operation; chain: DecoratorDef[] };
@@ -54,7 +52,7 @@ type LiveRun = {
   parent?: LiveRun;
   /** 在途的子 Run */
   children: Set<LiveRun>;
-  /** 这个 Run 是 harness_park、正在等值时才有 */
+  /** 经 ctx.park 等值时才有 */
   park?: Park;
   /** Run 的结果：正常退出与被杀，谁先到算谁 */
   done: PromiseWithResolvers<Result>;
@@ -77,8 +75,6 @@ export class Kernel {
 
   constructor(private readonly config: KernelConfig = {}) {
     this.fuse = { ...FUSE_DEFAULTS, ...config.kernel };
-    // 内核自带的 Operation：不公开，照常过装饰器链、受能力面约束
-    this.register({ name: "harness_park", input: PARK_INPUT, impl: (ctx, input) => this.park(ctx.runId, input) });
   }
 
   /** 名字须合命名规则；公开的 Operation 须写 usage；入参 schema 转不成 JSON Schema 的（如 z.date()）在这里就报错 */
@@ -130,11 +126,11 @@ export class Kernel {
     this.closePark(live, live.park, { ok: true, value: parsed.data });
   }
 
-  /** 对外接口·撤回：等待中的 park 以拒绝结果返回，by 为 harness_park */
+  /** 对外接口·撤回：等待中的 park 以拒绝结果返回，by 为挂起的那个 Operation（如 stdlib_park） */
   withdraw(id: string, reason: string): void {
     const live = this.lives.get(id);
     if (!live?.park) throw new Error(`not parked: ${id}`);
-    this.closePark(live, live.park, reject("harness_park", reason));
+    this.closePark(live, live.park, reject(live.run.operation, reason));
   }
 
   /**
@@ -151,8 +147,9 @@ export class Kernel {
 
   /**
    * 对外接口·关停（9.2）：不再接受新的外部调用，等在途的 Run 树收敛；到 timeoutMs 仍在途的按 killed 处理。
-   * 在途树内部的子调用照常进行，好让它们收敛。等 park 的树不会自己收敛，到时同样被杀。
-   * 后续加入：harness.stopping 责任链（投递插件 flush、各插件清理）；空闲的树落快照、不杀。
+   * 在途树内部的子调用照常进行，好让它们收敛。等 park 的树不会自己收敛，到时同样被杀，但 park 不关（不发 park.closed）。
+   * 后续加入：harness.stopping 责任链（投递插件 flush、各插件清理）；
+   * 空闲的树（只剩 park 在等）不等也不杀：进入空闲时已写好快照，重启后 park 按同一个 id 接着等（3.6、R11）。
    */
   async stop(timeoutMs: number): Promise<void> {
     this.stopping = true;
@@ -246,17 +243,19 @@ export class Kernel {
     // 实现的调用查它自己的能力面；装饰器的调用同样记在这个 Run 名下，但不查它的能力面（4.1）
     const { signal } = live.abort;
     const ctx: Ctx = {
-      runId: run.runId,
       call: (name, input) => this.callChild(live, name, input, op),
       signal,
       tools: () => this.toolsIn(op),
+      park: (req) => this.park(live, req),
     };
-    const decoratorCtx: DecoratorCtx = { runId: run.runId, call: (name, input) => this.callChild(live, name, input), signal };
+    const decoratorCtx: DecoratorCtx = { call: (name, input) => this.callChild(live, name, input), signal };
 
     const settle = async () => {
       const result = await runChain(decoratorCtx, run, chain, () => this.invoke(ctx, run, op), this.events);
-      // 实现没等完的子调用，等它们都返回再退出，不留悬空的子 Run
-      while (live.children.size > 0) await Promise.all([...live.children].map((c) => c.done.promise));
+      // 实现没等完的子调用与 park，等它们都结束再退出，不留悬空的子 Run
+      while (live.children.size > 0 || live.park) {
+        await Promise.all([...[...live.children].map((c) => c.done.promise), live.park?.closed.promise]);
+      }
       // 已被杀：不理会 ctx.signal 的实现照样跑完（JS 无法抢占），但结果作废
       if (run.status === "killed") return;
 
@@ -270,13 +269,14 @@ export class Kernel {
   }
 
   /**
-   * 杀掉 live 及其子孙：自己先转 killed、关掉它的 park、abort 它的 signal，再杀子 Run；
+   * 杀掉 live 及其子孙：自己先转 killed（取消时关掉它的 park）、abort 它的 signal，再杀子 Run；
    * 等它的一方拿到内核的拒绝结果。
    */
   private kill(live: LiveRun, reason: "cancelled" | "shutdown"): void {
     transition(live.run, "killed");
     this.events.emit({ type: "run.killed", runId: live.run.runId, operation: live.run.operation, reason });
-    if (live.park) this.closePark(live, live.park, reject("kernel", reason));
+    // 关停不关 park：它没被回答也没被撤回，以后有了快照会在重启后接着等
+    if (live.park && reason === "cancelled") this.closePark(live, live.park, reject("kernel", reason));
     live.abort.abort();
     for (const child of [...live.children]) this.kill(child, reason);
     this.forget(live);
@@ -308,19 +308,21 @@ export class Kernel {
   }
 
   /**
-   * harness_park 的实现：Run 转 waiting 并发 park.opened，等 unpark、撤回或被杀。
-   * 产出送来的值；被撤回时以拒绝返回（被杀时结果本就作废）。
+   * ctx.park 的实现：Run 转 waiting 并发 park.opened，等 unpark、撤回或取消。
+   * 返回送来的值；被撤回或取消时抛异常（取消时结果本就作废）。
    * 后续加入：同时等待的 park 数上限（保险丝）；树进入空闲（没有 running 的 Run）时写快照（3.6）。
    */
-  private async park(runId: string, input: z.output<typeof PARK_INPUT>): Promise<unknown> {
-    // 实现开始执行时 Run 必在途（invoke 已挡掉被杀的）
-    const live = this.lives.get(runId)!;
-    const { promise, resolve } = Promise.withResolvers<Result>();
-    live.park = { schema: z.fromJSONSchema(input.schema), settle: resolve };
+  private async park(live: LiveRun, { schema, payload }: { schema: Record<string, unknown>; payload: unknown }): Promise<unknown> {
+    const { run } = live;
+    // 与 callChild 一样：不理会 ctx.signal、被杀后还在跑的代码不能再挂起
+    if (run.status !== "running" && run.status !== "waiting") throw new Error(`run is ${run.status}`);
+    if (live.park) throw new Error(`run ${run.runId} is already parked`);
+    const closed = Promise.withResolvers<Result>();
+    live.park = { schema: z.fromJSONSchema(schema), closed };
     this.refresh(live);
-    this.events.emit({ type: "park.opened", runId, schema: input.schema, payload: input.payload });
+    this.events.emit({ type: "park.opened", runId: run.runId, schema, payload });
 
-    const result = await promise;
+    const result = await closed.promise;
     if (!result.ok) throw new Error(result.reason);
     return result.value;
   }
@@ -331,7 +333,7 @@ export class Kernel {
     live.park = undefined;
     this.refresh(live);
     this.events.emit({ type: "park.closed", runId: live.run.runId, result });
-    park.settle(result);
+    park.closed.resolve(result);
   }
 
   /** 实现抛出的异常也转成结果，不留悬空调用 */

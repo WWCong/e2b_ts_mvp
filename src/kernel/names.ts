@@ -7,10 +7,8 @@ const PACKAGE = /^[a-z][a-z0-9-]*$/;
 const EXPORT = /^[a-zA-Z][a-zA-Z0-9]*$/;
 const MAX_LENGTH = 64;
 
-/** 插件的包名；harness 留给内核自带的 Operation（如 harness_park） */
 export function checkPackageName(pkg: string): void {
   if (!PACKAGE.test(pkg)) throw new Error(`invalid package name: ${pkg} (lowercase letters, digits and -)`);
-  if (pkg === "harness") throw new Error("package name harness is reserved for the kernel");
 }
 
 export function checkName(name: string): void {

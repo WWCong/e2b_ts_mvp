@@ -11,8 +11,9 @@ export type OnError = "open" | "closed";
 
 /**
  * 装饰器拿到的 ctx 没有 tools()：装饰器里调模型只做判断，不给模型工具（8.1）。
+ * 也没有 park()：要挂起就调 park Operation，好让外层装饰器（如无人值守的短路）看得到。
  */
-export type DecoratorCtx = Omit<Ctx, "tools">;
+export type DecoratorCtx = Omit<Ctx, "tools" | "park">;
 
 /**
  * ctx.call 记在被装饰的 Run 名下，但不查它的能力面。
@@ -23,7 +24,7 @@ export type DecoratorCtx = Omit<Ctx, "tools">;
  *   改结果        const r = await next(); return 新结果
  *   拒绝          不调 next，return { ok: false, by, reason, retryable }
  *   直接给结果    不调 next，return { ok: true, value }   （如缓存）
- *   挂起          const r = await ctx.call("harness_park", { schema, payload })，据 r 放行或拒绝（如审批）
+ *   挂起          const r = await ctx.call("stdlib_park", { schema, payload })，据 r 放行或拒绝（如审批）
  *
  * 拒绝以结果返回，不抛异常；抛异常按 onError 处理。
  * 后续加入：往 run.context 放条目。

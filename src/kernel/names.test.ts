@@ -17,8 +17,4 @@ describe("命名规则", () => {
       expect(() => checkPackageName(pkg)).toThrow(`invalid package name: ${pkg}`);
     }
   });
-
-  test("包名 harness 留给内核", () => {
-    expect(() => checkPackageName("harness")).toThrow("package name harness is reserved for the kernel");
-  });
 });

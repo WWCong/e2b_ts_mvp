@@ -7,7 +7,10 @@ import type { Rejected, Run } from "./run";
 const YES_NO = z.toJSONSchema(z.boolean());
 const cancelled: Rejected = { ok: false, by: "kernel", reason: "cancelled", retryable: false };
 
-/** demo_ask 经 harness_park 等一个布尔值；默认装饰器 test_spy 按 Operation 名记下 Run，好查状态 */
+/**
+ * demo_park 与 stdlib_park 同形：把 ctx.park 包成 Operation；demo_ask 经它等一个布尔值。
+ * 默认装饰器 test_spy 按 Operation 名记下 Run，好查状态。
+ */
 function setup(config: KernelConfig = {}) {
   const kernel = new Kernel({ defaultDecorators: ["test_spy"], ...config });
   const events: HarnessEvent[] = [];
@@ -22,9 +25,14 @@ function setup(config: KernelConfig = {}) {
     },
   });
   kernel.register({
+    name: "demo_park",
+    input: z.object({ schema: z.record(z.string(), z.unknown()), payload: z.unknown() }),
+    impl: (ctx, input) => ctx.park(input),
+  });
+  kernel.register({
     name: "demo_ask",
     input: z.string(),
-    impl: (ctx, question: string) => ctx.call("harness_park", { schema: YES_NO, payload: { question } }),
+    impl: (ctx, question: string) => ctx.call("demo_park", { schema: YES_NO, payload: { question } }),
   });
   const opened = () => events.filter((e) => e.type === "park.opened");
   const parkId = (i = 0) => {
@@ -43,7 +51,7 @@ describe("park 与 unpark", () => {
     expect(opened()).toEqual([
       expect.objectContaining({ runId: parkId(), schema: YES_NO, payload: { question: "删除 a.txt？" } }),
     ]);
-    const park = runs.get("harness_park")!;
+    const park = runs.get("demo_park")!;
     expect(park.runId).toBe(parkId());
     expect([runs.get("demo_ask")!.status, park.status]).toEqual(["waiting", "waiting"]);
 
@@ -66,15 +74,15 @@ describe("park 与 unpark", () => {
     const root = kernel.start("demo_ask", "?");
 
     expect(() => kernel.unpark(parkId(), "yes")).toThrow(`invalid value for park ${parkId()}`);
-    expect(runs.get("harness_park")!.status).toBe("waiting");
+    expect(runs.get("demo_park")!.status).toBe("waiting");
     kernel.unpark(parkId(), false);
     expect(await kernel.reap(root)).toEqual({ ok: true, value: { ok: true, value: false } });
   });
 
-  test("撤回：park 以拒绝结果返回，by 为 harness_park", async () => {
+  test("撤回：park 以拒绝结果返回，by 为挂起的那个 Operation", async () => {
     const { kernel, events, parkId } = setup();
     const root = kernel.start("demo_ask", "?");
-    const withdrawn: Rejected = { ok: false, by: "harness_park", reason: "用户没回答", retryable: false };
+    const withdrawn: Rejected = { ok: false, by: "demo_park", reason: "用户没回答", retryable: false };
 
     kernel.withdraw(parkId(), "用户没回答");
     expect(await kernel.reap(root)).toEqual({ ok: true, value: withdrawn });
@@ -113,12 +121,43 @@ describe("park 与 unpark", () => {
     kernel.register({
       name: "demo_bad",
       input: z.null(),
-      impl: (ctx) => ctx.call("harness_park", { schema: { type: "nope" }, payload: null }),
+      impl: (ctx) => ctx.call("demo_park", { schema: { type: "nope" }, payload: null }),
     });
 
     const result = await kernel.reap(kernel.start("demo_bad", null));
-    expect(result).toMatchObject({ ok: true, value: { ok: false, by: "harness_park" } });
+    expect(result).toMatchObject({ ok: true, value: { ok: false, by: "demo_park" } });
     expect(opened()).toEqual([]);
+  });
+
+  test("实现没等 park 就返回：Run 等 park 关闭后才退出", async () => {
+    const { kernel, events, parkId } = setup();
+    kernel.register({
+      name: "demo_forget",
+      input: z.null(),
+      impl: async (ctx) => {
+        void ctx.park({ schema: YES_NO, payload: null });
+        return "done";
+      },
+    });
+    const root = kernel.start("demo_forget", null);
+
+    await Bun.sleep(1);
+    expect(events.some((e) => e.type === "run.exited")).toBe(false);
+    kernel.unpark(parkId(), true);
+    expect(await kernel.reap(root)).toEqual({ ok: true, value: "done" });
+  });
+
+  test("同一个 Run 同时只能 park 一次", async () => {
+    const { kernel, parkId } = setup();
+    kernel.register({
+      name: "demo_twice",
+      input: z.null(),
+      impl: (ctx) => Promise.all([1, 2].map((payload) => ctx.park({ schema: YES_NO, payload }))),
+    });
+    const root = kernel.start("demo_twice", null);
+
+    kernel.unpark(parkId(), true);
+    expect(await kernel.reap(root)).toMatchObject({ ok: false, by: "demo_twice", reason: `run ${root} is already parked` });
   });
 });
 
@@ -140,23 +179,45 @@ describe("park 与取消、关停", () => {
     expect(() => kernel.unpark(id, true)).toThrow(`not parked: ${id}`);
   });
 
-  test("关停：等 park 的树不会自己收敛，到超时被杀", async () => {
-    const { kernel } = setup();
+  test("关停：等 park 的树不会自己收敛，到超时被杀，但 park 不关", async () => {
+    const { kernel, events } = setup();
     const root = kernel.start("demo_ask", "?");
 
     await kernel.stop(5);
     expect(await kernel.reap(root)).toMatchObject({ ok: false, by: "kernel", reason: "shutdown" });
+    expect(events.map((e) => e.type)).toEqual(["run.started", "run.started", "park.opened", "run.killed", "run.killed"]);
+  });
+
+  test("被杀后还在跑的代码不能再挂起", async () => {
+    const { kernel, events } = setup();
+    const gate = Promise.withResolvers<void>();
+    let late: unknown;
+    kernel.register({
+      name: "demo_stubborn",
+      input: z.null(),
+      impl: async (ctx) => {
+        await gate.promise;
+        await ctx.park({ schema: YES_NO, payload: null }).catch((err) => (late = err));
+      },
+    });
+    const id = kernel.start("demo_stubborn", null);
+
+    kernel.cancel(id);
+    gate.resolve();
+    await Bun.sleep(1);
+    expect(late).toMatchObject({ message: "run is killed" });
+    expect(events.some((e) => e.type === "park.opened")).toBe(false);
   });
 });
 
 describe("装饰器与 park", () => {
-  test("挂起：审批装饰器在 next() 之前调 harness_park，据回答放行或拒绝", async () => {
+  test("挂起：审批装饰器在 next() 之前调 park Operation，据回答放行或拒绝", async () => {
     const { kernel, parkId } = setup();
     kernel.registerDecorator({
       id: "test_approval",
       onError: "closed",
       fn: async (ctx, run, next) => {
-        const r = await ctx.call("harness_park", { schema: YES_NO, payload: { approve: run.operation } });
+        const r = await ctx.call("demo_park", { schema: YES_NO, payload: { approve: run.operation } });
         if (r.ok && r.value === true) return next();
         return { ok: false, by: "test_approval", reason: "not approved", retryable: false };
       },
@@ -178,7 +239,7 @@ describe("装饰器与 park", () => {
     kernel.registerDecorator({
       id: "test_unattended",
       onError: "closed",
-      fn: async (_ctx, run, next) => (run.operation === "harness_park" ? unattended : next()),
+      fn: async (_ctx, run, next) => (run.operation === "demo_park" ? unattended : next()),
     });
 
     expect(await kernel.reap(kernel.start("demo_ask", "?"))).toEqual({ ok: true, value: unattended });

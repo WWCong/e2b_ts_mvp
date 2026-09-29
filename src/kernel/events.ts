@@ -17,9 +17,9 @@ export type EventBody =
   | { type: "run.killed"; runId: string; operation: string; reason: string }
   /** 内核在建子 Run 之前就拒绝了这次调用（目标不存在、不在能力面、超出保险丝、入参不符等）；runId 是发起方 */
   | { type: "call.rejected"; runId: string; target: string; input: unknown; result: Rejected }
-  /** harness_park 开始等待；runId 即 unpark 用的 id。payload 内核不解释，由 UI 等外部按约定格式理解（3.5） */
+  /** Run 经 ctx.park 开始等待；runId 即 unpark 用的 id。payload 内核不解释，由 UI 等外部按约定格式理解（3.5） */
   | { type: "park.opened"; runId: string; schema: Record<string, unknown>; payload: unknown }
-  /** 不再等待：unpark 送来了值、被撤回，或 Run 被杀。result 是 park 这次的产出 */
+  /** 不再等待：unpark 送来了值、被撤回，或 Run 被取消；关停不算（见 Kernel.stop）。result 是 park 这次的产出 */
   | { type: "park.closed"; runId: string; result: Result }
   | ({ type: "decorator.rewrote"; phase: "input" | "result"; value: unknown } & Link)
   | ({ type: "decorator.rejected"; result: Rejected } & Link)
