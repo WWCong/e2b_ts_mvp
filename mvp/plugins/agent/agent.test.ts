@@ -15,6 +15,7 @@ import type { HarnessEvent } from "../../../src/kernel/events";
 import { Kernel } from "../../../src/kernel/kernel";
 import { loadPlugin } from "../../../src/kernel/loader";
 import { models } from "../model/models";
+import type { Answer } from "../ui";
 
 const faux = fauxProvider();
 let kernel: Kernel;
@@ -23,7 +24,7 @@ let workspace: string;
 /** 每次发给模型的请求 */
 let requests: TranscriptContext[];
 /** 人依次给出的回答：每开一个 park 取一个 */
-let answers: string[];
+let answers: Answer[];
 
 beforeAll(async () => {
   models.setProvider(faux.provider);
@@ -65,7 +66,7 @@ const toolResultsIn = (i: number) =>
 describe("agent_assist", () => {
   test("读文件 → 写文件（人批准）→ 回答：工具结果回给模型，每次调用都是 agent_assist 的子 Run", async () => {
     await writeFile(join(workspace, "notes.md"), "明天下午三点开会");
-    answers = ["yes"];
+    answers = [{ option: "yes" }];
     faux.setResponses([
       step(fauxToolCall("fs_read", { path: "notes.md" })),
       step(fauxToolCall("fs_write", { path: "summary.md", content: "三点开会" })),
@@ -95,7 +96,7 @@ describe("agent_assist", () => {
   });
 
   test("人不批准写文件：拒绝作为出错的工具结果交给模型，文件不写", async () => {
-    answers = ["no"];
+    answers = [{ option: "no" }];
     faux.setResponses([
       step(fauxToolCall("fs_write", { path: "a.md", content: "x" })),
       step(fauxText("你没有批准，所以没写")),
@@ -112,15 +113,15 @@ describe("agent_assist", () => {
     expect(await readdir(workspace)).toEqual([]);
   });
 
-  test("模型用 ui_ask 问人：回答作为工具结果交给模型", async () => {
-    answers = ["txt"];
+  test("模型用 ui_ask 问人：选项与补充说明作为工具结果交给模型", async () => {
+    answers = [{ option: "txt", text: "标题用日期" }];
     faux.setResponses([
       step(fauxToolCall("ui_ask", { question: "用哪种格式？", options: ["md", "txt"] })),
       step(fauxText("好的，用 txt")),
     ]);
 
     expect(await assist("写个笔记")).toEqual({ ok: true, value: { answer: "好的，用 txt" } });
-    expect(toolResultsIn(1)).toEqual([{ name: "ui_ask", isError: false, text: "txt" }]);
+    expect(toolResultsIn(1)).toEqual([{ name: "ui_ask", isError: false, text: '{"option":"txt","text":"标题用日期"}' }]);
   });
 
   test("被拒绝的调用作为出错的工具结果交给模型，由它改道", async () => {

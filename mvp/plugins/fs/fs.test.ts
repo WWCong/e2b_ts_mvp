@@ -18,7 +18,7 @@ async function setup() {
   const kernel = new Kernel();
   const events: HarnessEvent[] = [];
   kernel.events.subscribe((e) => events.push(e));
-  kernel.events.subscribe((e) => e.type === "park.opened" && queueMicrotask(() => kernel.unpark(e.runId, "yes")));
+  kernel.events.subscribe((e) => e.type === "park.opened" && queueMicrotask(() => kernel.unpark(e.runId, { option: "yes" })));
   await loadPlugin(kernel, join(import.meta.dir, "..", "..", "..", "src", "plugins", "stdlib"));
   for (const pkg of ["fs", "ui"]) await loadPlugin(kernel, join(import.meta.dir, "..", pkg));
   const run = (name: string, input: unknown) => kernel.reap(kernel.start(name, input));
