@@ -8,6 +8,7 @@ import { runChain, type DecoratorCtx, type DecoratorDef } from "./chain";
 import { EventStream } from "./events";
 import { checkName } from "./names";
 import { reject, transition, type Ctx, type Rejected, type Result, type Run, type ToolSpec } from "./run";
+import { digest, SnapshotStore, type CallRecord, type SnapshotRun } from "./snapshot";
 import { inSurface, type Surface } from "./surface";
 
 /** ctx 之外恰好一个入参、返回 Promise；ctx 不算入参，不进 schema */
@@ -30,18 +31,20 @@ export type Operation = Surface & {
   decorators?: string[];
 };
 
-/** 装配配置里内核关心的部分。后续加入：snapshotDir 等 */
+/** 装配配置里内核关心的部分 */
 export type KernelConfig = {
   /** 包住所有调用的装饰器，从外到内 */
   defaultDecorators?: string[];
+  /** 快照目录：持久卷上、任何原语不可达（R11）。不配就不写快照 */
+  snapshotDir?: string;
   /** 资源保险丝（3.4）。后续加入：同时等待的 park 数上限 */
   kernel?: { maxDepth?: number; maxLiveRuns?: number };
 };
 
 const FUSE_DEFAULTS = { maxDepth: 32, maxLiveRuns: 1024 };
 
-/** 等待中的 park：送来的值按 schema 校验；closed 在关闭时带着产出兑现 */
-type Park = { schema: z.ZodType; closed: PromiseWithResolvers<Result> };
+/** 等待中的 park：送来的值按 check（由 schema 转来）校验；closed 在关闭时带着产出兑现 */
+type Park = { schema: Record<string, unknown>; payload: unknown; check: z.ZodType; closed: PromiseWithResolvers<Result> };
 
 /** 通过检查、待执行的 Run */
 type Admitted = { run: Run; op: Operation; chain: DecoratorDef[] };
@@ -50,6 +53,10 @@ type Admitted = { run: Run; op: Operation; chain: DecoratorDef[] };
 type LiveRun = {
   run: Run;
   parent?: LiveRun;
+  /** 父为这次调用建的记录；根 Run 没有 */
+  record?: CallRecord;
+  /** 这个 Run 发起的调用，按发起顺序 */
+  calls: CallRecord[];
   /** 在途的子 Run */
   children: Set<LiveRun>;
   /** 经 ctx.park 等值时才有 */
@@ -72,9 +79,13 @@ export class Kernel {
   private readonly lives = new Map<string, LiveRun>();
   private readonly fuse: { maxDepth: number; maxLiveRuns: number };
   private stopping = false;
+  private readonly store?: SnapshotStore;
+  /** 写了快照的树（根 runId） */
+  private readonly snapshotted = new Set<string>();
 
   constructor(private readonly config: KernelConfig = {}) {
     this.fuse = { ...FUSE_DEFAULTS, ...config.kernel };
+    if (config.snapshotDir) this.store = new SnapshotStore(config.snapshotDir);
   }
 
   /** 名字须合命名规则；公开的 Operation 须写 usage；入参 schema 转不成 JSON Schema 的（如 z.date()）在这里就报错 */
@@ -121,7 +132,7 @@ export class Kernel {
   unpark(id: string, value: unknown): void {
     const live = this.lives.get(id);
     if (!live?.park) throw new Error(`not parked: ${id}`);
-    const parsed = live.park.schema.safeParse(value);
+    const parsed = live.park.check.safeParse(value);
     if (!parsed.success) throw new Error(`invalid value for park ${id}:\n${z.prettifyError(parsed.error)}`);
     this.closePark(live, live.park, { ok: true, value: parsed.data });
   }
@@ -147,7 +158,7 @@ export class Kernel {
 
   /**
    * 对外接口·关停（9.2）：不再接受新的外部调用，等在途的 Run 树收敛；到 timeoutMs 仍在途的按 killed 处理。
-   * 在途树内部的子调用照常进行，好让它们收敛。等 park 的树不会自己收敛，到时同样被杀，但 park 不关（不发 park.closed）。
+   * 在途树内部的子调用照常进行，好让它们收敛。等 park 的树不会自己收敛，到时同样被杀，但 park 不关（不发 park.closed）、快照保留。
    * 后续加入：harness.stopping 责任链（投递插件 flush、各插件清理）；
    * 空闲的树（只剩 park 在等）不等也不杀：进入空闲时已写好快照，重启后 park 按同一个 id 接着等（3.6、R11）。
    */
@@ -167,15 +178,21 @@ export class Kernel {
    */
   private callChild(caller: LiveRun, name: string, input: unknown, surface?: Surface): Promise<Result> {
     const { run } = caller;
+    // 调用记录：发起时建，完成时补上结果
+    const record: CallRecord = { target: name, input: digest(input) };
+    caller.calls.push(record);
+
     let admitted: Admitted | Rejected;
     if (run.status === "exited" || run.status === "killed") admitted = reject("kernel", `caller is ${run.status}`);
     else if (surface && !inSurface(surface, name)) admitted = reject("kernel", `${name} is not in the surface of ${run.operation}`);
     else admitted = this.admit(name, input, run);
     if ("ok" in admitted) {
+      complete(caller, record, admitted);
       this.events.emit({ type: "call.rejected", runId: run.runId, target: name, input, result: admitted });
       return Promise.resolve(admitted);
     }
-    return this.execute(admitted, caller);
+    record.child = admitted.run.runId;
+    return this.execute(admitted, caller, record);
   }
 
   /**
@@ -215,10 +232,12 @@ export class Kernel {
     return { run, op, chain };
   }
 
-  private execute({ run, op, chain }: Admitted, parent?: LiveRun): Promise<Result> {
+  private execute({ run, op, chain }: Admitted, parent?: LiveRun, record?: CallRecord): Promise<Result> {
     const live: LiveRun = {
       run,
       parent,
+      record,
+      calls: [],
       children: new Set(),
       done: Promise.withResolvers(),
       abort: new AbortController(),
@@ -229,6 +248,7 @@ export class Kernel {
       // 父先转 waiting：子 Run 的实现在下面同步开始
       this.refresh(parent);
     }
+    this.dropSnapshot(live);
     transition(run, "running");
     this.events.emit({
       type: "run.started",
@@ -260,7 +280,7 @@ export class Kernel {
       if (run.status === "killed") return;
 
       transition(run, "exited");
-      this.forget(live);
+      this.forget(live, result);
       this.events.emit({ type: "run.exited", runId: run.runId, operation: run.operation, result });
       live.done.resolve(result);
     };
@@ -271,16 +291,21 @@ export class Kernel {
   /**
    * 杀掉 live 及其子孙：自己先转 killed（取消时关掉它的 park）、abort 它的 signal，再杀子 Run；
    * 等它的一方拿到内核的拒绝结果。
+   * 关停不关 park、不删快照：它没被回答也没被撤回，重启后接着等。
    */
   private kill(live: LiveRun, reason: "cancelled" | "shutdown"): void {
     transition(live.run, "killed");
     this.events.emit({ type: "run.killed", runId: live.run.runId, operation: live.run.operation, reason });
-    // 关停不关 park：它没被回答也没被撤回，以后有了快照会在重启后接着等
-    if (live.park && reason === "cancelled") this.closePark(live, live.park, reject("kernel", reason));
+    if (reason === "cancelled") {
+      // 取消了整棵树：快照随之删除
+      if (!live.parent) this.dropSnapshot(live);
+      if (live.park) this.closePark(live, live.park, reject("kernel", reason));
+    }
     live.abort.abort();
     for (const child of [...live.children]) this.kill(child, reason);
-    this.forget(live);
-    live.done.resolve(reject("kernel", reason));
+    const result = reject("kernel", reason);
+    this.forget(live, result);
+    live.done.resolve(result);
   }
 
   /** 能力面里的公开 Operation，按名字排序 */
@@ -290,13 +315,18 @@ export class Kernel {
       .sort((a, b) => (a.name < b.name ? -1 : 1));
   }
 
-  /** Run 退出或被杀后从内核移除；父不再等任何东西时回到 running */
-  private forget(live: LiveRun): void {
+  /**
+   * Run 退出或被杀后从内核移除：结果记进父的调用记录，父不再等任何东西时回到 running。
+   * 父仍在等（别的子 Run 还在）时树可能就此空闲：比如只剩 park 在等。
+   */
+  private forget(live: LiveRun, result: Result): void {
     this.lives.delete(live.run.runId);
-    const { parent } = live;
-    if (!parent) return;
+    const { parent, record } = live;
+    if (!parent || !record) return;
+    complete(parent, record, result);
     parent.children.delete(live);
     this.refresh(parent);
+    this.snapshotIfIdle(parent);
   }
 
   /** 在途 Run 在等子 Run 或等 unpark 时为 waiting，否则为 running（R8）；已结束的不动 */
@@ -304,13 +334,37 @@ export class Kernel {
     const { run } = live;
     if (run.status !== "running" && run.status !== "waiting") return;
     const to = live.children.size > 0 || live.park ? "waiting" : "running";
-    if (run.status !== to) transition(run, to);
+    if (run.status === to) return;
+    if (to === "running") this.dropSnapshot(live);
+    transition(run, to);
+  }
+
+  /**
+   * 树空闲（树里的 Run 都在 waiting，叶子都是 park）时写快照（3.6）。
+   * 空闲期间有调用被取消，记录变了，再写一次覆盖。没配 snapshotDir 就不写。
+   */
+  private snapshotIfIdle(live: LiveRun): void {
+    if (!this.store) return;
+    const root = rootOf(live);
+    const tree = [...walk(root)];
+    if (!tree.every((l) => l.run.status === "waiting")) return;
+    this.store.write({ root: root.run.runId, runs: tree.map(toSnapshotRun) });
+    this.snapshotted.add(root.run.runId);
+    this.events.emit({ type: "snapshot.written", runId: root.run.runId });
+  }
+
+  /** 树里有 Run 要进入 running：先删掉它的快照（R11：删除先于送值） */
+  private dropSnapshot(live: LiveRun): void {
+    const root = rootOf(live).run.runId;
+    if (!this.snapshotted.delete(root)) return;
+    this.store?.delete(root);
+    this.events.emit({ type: "snapshot.deleted", runId: root });
   }
 
   /**
    * ctx.park 的实现：Run 转 waiting 并发 park.opened，等 unpark、撤回或取消。
    * 返回送来的值；被撤回或取消时抛异常（取消时结果本就作废）。
-   * 后续加入：同时等待的 park 数上限（保险丝）；树进入空闲（没有 running 的 Run）时写快照（3.6）。
+   * 后续加入：同时等待的 park 数上限（保险丝）。
    */
   private async park(live: LiveRun, { schema, payload }: { schema: Record<string, unknown>; payload: unknown }): Promise<unknown> {
     const { run } = live;
@@ -318,18 +372,18 @@ export class Kernel {
     if (run.status !== "running" && run.status !== "waiting") throw new Error(`run is ${run.status}`);
     if (live.park) throw new Error(`run ${run.runId} is already parked`);
     const closed = Promise.withResolvers<Result>();
-    live.park = { schema: z.fromJSONSchema(schema), closed };
+    live.park = { schema, payload, check: z.fromJSONSchema(schema), closed };
     this.refresh(live);
     this.events.emit({ type: "park.opened", runId: run.runId, schema, payload });
+    this.snapshotIfIdle(live);
 
     const result = await closed.promise;
     if (!result.ok) throw new Error(result.reason);
     return result.value;
   }
 
-  /** 先转回 running（被杀的除外）、发 park.closed，再把结果交给等待的实现 */
+  /** 先转回 running（被杀的除外；转回前删快照）、发 park.closed，再把结果交给等待的实现 */
   private closePark(live: LiveRun, park: Park, result: Result): void {
-    // 后续加入：树从空闲转回活跃之前，先删掉它的快照（R11）
     live.park = undefined;
     this.refresh(live);
     this.events.emit({ type: "park.closed", runId: live.run.runId, result });
@@ -346,4 +400,26 @@ export class Kernel {
       return reject(run.operation, err);
     }
   }
+}
+
+/** 调用完成：记下结果，与它是 caller 第几个完成的调用 */
+function complete(caller: LiveRun, record: CallRecord, result: Result): void {
+  record.order = caller.calls.filter((c) => c.result).length;
+  record.result = result;
+}
+
+function rootOf(live: LiveRun): LiveRun {
+  while (live.parent) live = live.parent;
+  return live;
+}
+
+/** 先序遍历：父在子前 */
+function* walk(live: LiveRun): Generator<LiveRun> {
+  yield live;
+  for (const child of live.children) yield* walk(child);
+}
+
+function toSnapshotRun({ run, calls, park }: LiveRun): SnapshotRun {
+  const { runId, operation, input, depth, parent } = run;
+  return { runId, operation, input, depth, parent, calls, park: park && { schema: park.schema, payload: park.payload } };
 }
