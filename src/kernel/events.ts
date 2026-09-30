@@ -21,10 +21,6 @@ export type EventBody =
   | { type: "park.opened"; runId: string; schema: Record<string, unknown>; payload: unknown }
   /** 不再等待：unpark 送来了值、被撤回，或 Run 被取消；关停不算（见 Kernel.stop）。result 是 park 这次的产出 */
   | { type: "park.closed"; runId: string; result: Result }
-  /** 树空闲，写了快照（空闲期间记录有变会再写一次）；runId 是根 */
-  | { type: "snapshot.written"; runId: string }
-  /** 树要重新活跃，先删了快照；runId 是根 */
-  | { type: "snapshot.deleted"; runId: string }
   | ({ type: "decorator.rewrote"; phase: "input" | "result"; value: unknown } & Link)
   | ({ type: "decorator.rejected"; result: Rejected } & Link)
   | ({ type: "decorator.failed"; onError: OnError; error: string } & Link);
