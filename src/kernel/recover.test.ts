@@ -269,3 +269,48 @@ describe("恢复：回放的顺序与走法", () => {
     expect(two.parks().map((e) => [e.runId, e.payload])).toEqual([[root, "direct"]]);
   });
 });
+
+test("嵌套：崩溃点所在路径上的 Run 重新执行，旁边已完成的子树换成结果不进入，之后的照常执行", async () => {
+  /** S 调 Op1、Op2；Op1 调 Op11、Op12；Op11 调 Op111；Op12 卡在 gate 上（崩溃时在途） */
+  function tree(journalDir: string) {
+    const kernel = new Kernel({ journalDir });
+    const ran: string[] = [];
+    const attempts: Record<string, number> = {};
+    const gate = Promise.withResolvers<void>();
+    const op = (name: string, impl: (ctx: Ctx) => Promise<unknown>) =>
+      kernel.register({
+        name,
+        input: z.null(),
+        impl: (ctx) => {
+          ran.push(name);
+          attempts[name] = ctx.attempt;
+          return impl(ctx);
+        },
+      });
+    op("demo_s", async (ctx) => [await ctx.call("demo_op1", null), await ctx.call("demo_op2", null)]);
+    op("demo_op1", async (ctx) => [await ctx.call("demo_op11", null), await ctx.call("demo_op12", null)]);
+    op("demo_op11", (ctx) => ctx.call("demo_op111", null));
+    op("demo_op111", async () => "1.1.1");
+    op("demo_op12", async () => {
+      await gate.promise;
+      return "1.2";
+    });
+    op("demo_op2", async () => "2");
+    return { kernel, ran, attempts, gate };
+  }
+
+  const one = tree(dir);
+  const root = one.kernel.start("demo_s", null);
+  await Bun.sleep(1);
+  expect(one.ran).toEqual(["demo_s", "demo_op1", "demo_op11", "demo_op111", "demo_op12"]);
+
+  const two = tree(crash(dir));
+  two.kernel.recover();
+  two.gate.resolve();
+  const value = (v: unknown) => ({ ok: true as const, value: v });
+  expect(await two.kernel.reap(root)).toEqual(
+    value([value([value(value("1.1.1")), value("1.2")]), value("2")]),
+  );
+  expect(two.ran).toEqual(["demo_s", "demo_op1", "demo_op12", "demo_op2"]);
+  expect(two.attempts).toEqual({ demo_s: 2, demo_op1: 2, demo_op12: 2, demo_op2: 1 });
+});
