@@ -27,7 +27,7 @@ function crash(from: string): string {
 /**
  * 起一个内核，注册同样的 Operation：
  * demo_flow 先调 demo_count 再调 demo_park；demo_mail 调 demo_send，demo_send 卡在 gate 上；
- * demo_clock 用 step 取时间再 park。impls 记下实现真正执行过的，chained 记下过了装饰器链的。
+ * demo_clock 经 demo_now 取时间再 park。impls 记下实现真正执行过的，chained 记下过了装饰器链的。
  */
 function boot(journalDir: string, options: { flow?: (ctx: Ctx) => Promise<unknown>; clock?: () => number } = {}) {
   const kernel = new Kernel({ journalDir, defaultDecorators: ["test_spy"] });
@@ -66,9 +66,10 @@ function boot(journalDir: string, options: { flow?: (ctx: Ctx) => Promise<unknow
     return "sent";
   });
   register("demo_mail", (ctx) => ctx.call("demo_send", null));
+  register("demo_now", async () => (options.clock ?? (() => 0))());
   register("demo_clock", async (ctx) => {
-    const now = await ctx.step("now", options.clock ?? (() => 0));
-    return ctx.call("demo_park", ask(now));
+    const now = await ctx.call("demo_now", null);
+    return ctx.call("demo_park", ask(now.ok && now.value));
   });
   const parks = () => events.filter((e) => e.type === "park.opened");
   return { kernel, events, impls, chained, sends, gate, parks };
@@ -123,7 +124,7 @@ describe("恢复", () => {
     expect(three.events.find((e) => e.type === "run.started" && e.runId === root)).toMatchObject({ attempt: 3 });
   });
 
-  test("step：第一次执行 fn 并记下值；重放时给回记下的值，不再执行", async () => {
+  test("不确定的值（时间）经 Operation 取：恢复重放时回送当初的结果，不再执行", async () => {
     let calls = 0;
     const one = boot(dir, { clock: () => 1000 });
     one.kernel.start("demo_clock", null);

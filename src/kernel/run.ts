@@ -15,7 +15,9 @@ export type ToolSpec = { name: string; description: string; inputSchema: Record<
 
 /**
  * 内核交给实现与装饰器的句柄，绑定在一个 Run 上。
- * 后续加入：spawn、emit、state（get / set），以及 depth 等只读信息。
+ * 要落日志、要恢复的东西都经 Operation 取：调用结果记进日志，恢复重放时回送。
+ * 时间这类不确定的值也一样（stdlib_now），状态将来是 state 插件的 Operation，内核不另设接口。
+ * 后续加入：spawn、emit，以及 depth 等只读信息。
  */
 export type Ctx = {
   /** 这个 Run 的 runId。崩溃恢复后重新执行时不变，可当幂等键交给外部系统（如邮件的 Message-ID） */
@@ -34,11 +36,6 @@ export type Ctx = {
    * 一般不直接用，而是调 park Operation（stdlib_park），好让装饰器看得到这次挂起。装饰器的 ctx 没有它。
    */
   park(req: { schema: Record<string, unknown>; payload: unknown }): Promise<unknown>;
-  /**
-   * 取一个不确定的值（时间、随机数、uuid）：第一次执行 fn 并把值记进日志，恢复重放时直接给回记下的值，不再执行。
-   * 值要能 JSON 序列化。只用来读：对外部世界的副作用要做成 Operation，才过装饰器链、有 attempt 与幂等键。
-   */
-  step<T>(name: string, fn: () => T | Promise<T>): Promise<T>;
 };
 
 /** 把异常或原因转成拒绝结果 */

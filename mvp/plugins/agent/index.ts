@@ -19,7 +19,7 @@ type Reply = { message: AssistantMessage; calls: ToolCall[]; answer: string | nu
 
 export const assist = op({
   input: z.object({ prompt: z.string() }),
-  only: ["fs", "model", "ui"],
+  only: ["fs", "model", "ui", "stdlib_now"],
   impl: async (ctx, input) => {
     const tools = ctx.tools();
     const history: Message[] = [{ role: "user", content: input.prompt, timestamp: await now(ctx) }];
@@ -39,9 +39,11 @@ export const assist = op({
   },
 });
 
-/** 消息的时间戳经 ctx.step 取：恢复重放时给回当初的值，交给模型的历史与原来一致，调用才比对得上 */
-function now(ctx: Ctx): Promise<number> {
-  return ctx.step("now", () => Date.now());
+/** 消息的时间戳经 stdlib_now 取：恢复重放时回送当初的值，交给模型的历史与原来一致，调用才比对得上 */
+async function now(ctx: Ctx): Promise<number> {
+  const r = await ctx.call("stdlib_now", null);
+  if (!r.ok) throw new Error(`stdlib_now rejected by ${r.by}: ${r.reason}`);
+  return r.value as number;
 }
 
 /** 调用结果写成给模型看的工具结果：成功给值，被拒给拒绝的来由 */

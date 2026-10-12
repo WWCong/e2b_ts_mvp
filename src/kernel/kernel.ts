@@ -58,7 +58,7 @@ type LiveRun = {
   parent?: LiveRun;
   /** 这个 Run 是父的第几个调用；根 Run 没有 */
   seq?: number;
-  /** 这个 Run 已发起的调用、step、park 的个数，即下一个的序号 */
+  /** 这个 Run 已发起的调用与 park 的个数，即下一个的序号 */
   issued: number;
   /** 恢复中的树里每个 Run 在日志里的记录：重新执行时按序号回放 */
   logs?: Map<string, RunLog>;
@@ -124,7 +124,7 @@ export class Kernel {
   /**
    * 对外接口·恢复：读写前日志，重建所有没结束的树，返回它们根的 runId 供收割。装载完插件后调用。
    * 根与崩溃时正在执行的 Run 用原 runId 重新执行，attempt 加一。重新执行时按序号回放：
-   * 已完成的调用回送记下的结果（不执行、不过链），step 给回记下的值，已回答的 park 直接拿到回答，没回答的用原 id 重新开出。
+   * 已完成的调用回送记下的结果（不执行、不过链），已回答的 park 直接拿到回答，没回答的用原 id 重新开出。
    */
   recover(): string[] {
     if (!this.journal) return [];
@@ -318,7 +318,6 @@ export class Kernel {
     // 实现的调用查它自己的能力面；装饰器的调用同样记在这个 Run 名下，但不查它的能力面（4.1）
     const { signal } = live.abort;
     const { runId, attempt } = run;
-    const step: Ctx["step"] = (name, fn) => this.step(live, name, fn);
     const ctx: Ctx = {
       runId,
       attempt,
@@ -326,9 +325,8 @@ export class Kernel {
       signal,
       tools: () => this.toolsIn(op),
       park: (req) => this.park(live, req),
-      step,
     };
-    const decoratorCtx: DecoratorCtx = { runId, attempt, call: (name, input) => this.callChild(live, name, input), signal, step };
+    const decoratorCtx: DecoratorCtx = { runId, attempt, call: (name, input) => this.callChild(live, name, input), signal };
 
     const settle = async () => {
       const result = await runChain(decoratorCtx, run, chain, () => this.invoke(ctx, run, op), this.events);
@@ -431,24 +429,9 @@ export class Kernel {
     return result.value;
   }
 
-  /** ctx.step 的实现：重放时给回日志里记下的值；否则执行 fn，值落盘后才返回 */
-  private async step<T>(live: LiveRun, name: string, fn: () => T | Promise<T>): Promise<T> {
-    const { run } = live;
-    if (run.status !== "running" && run.status !== "waiting") throw new Error(`run is ${run.status}`);
-    const seq = live.issued++;
-    const recorded = recordedAt(live, seq);
-    if (recorded) {
-      if (recorded.type === "step" && recorded.name === name) return recorded.value as T;
-      throw new Error(this.diverge(live, seq, recorded, `step ${name}`).reason);
-    }
-    const value = await fn();
-    this.record(live, { type: "step", runId: run.runId, seq, name, value });
-    return value;
-  }
-
   /** 重放时比对不上：执行路径变了，前提已不成立，整棵树按 killed 处理、日志删除（R12） */
   private diverge(live: LiveRun, seq: number, recorded: Recorded, actual: string): Rejected {
-    const expected = recorded.type === "call" ? `call ${recorded.target}` : recorded.type === "step" ? `step ${recorded.name}` : "park";
+    const expected = recorded.type === "call" ? `call ${recorded.target}` : "park";
     const reason = `diverged at #${seq} of ${live.run.operation}: journal has ${expected}, got ${actual}`;
     this.kill(rootOf(live), reason);
     return reject("kernel", reason);

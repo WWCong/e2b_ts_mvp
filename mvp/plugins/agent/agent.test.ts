@@ -86,12 +86,16 @@ describe("agent_assist", () => {
     expect(root).toMatchObject({ operation: "agent_assist", depth: 0 });
     const write = children.find((e) => e.operation === "fs_write")!;
     expect(children.map((e) => [e.operation, e.parent])).toEqual([
+      // 消息的时间戳经 stdlib_now 取：用户消息一次，每轮工具结果一次
+      ["stdlib_now", root!.runId],
       ["model_complete", root!.runId],
       ["fs_read", root!.runId],
+      ["stdlib_now", root!.runId],
       ["model_complete", root!.runId],
       ["fs_write", root!.runId],
       // 审批装饰器的调用记在 fs_write 名下
       ["stdlib_park", write.runId],
+      ["stdlib_now", root!.runId],
       ["model_complete", root!.runId],
     ]);
   });

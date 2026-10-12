@@ -1,6 +1,6 @@
 /**
  * 写前日志：一棵树一个只追加的文件（JSON Lines），放在内核专属目录，任何原语不可达（R11）。
- * 调用发起、调用完成、step 取值、park 关闭，都先落盘再继续；恢复时据它重建没结束的树。
+ * 调用发起、调用完成、park 关闭，都先落盘再继续；恢复时据它重建没结束的树。
  * 后续加入：长期存在的树压缩日志。
  */
 
@@ -9,7 +9,7 @@ import { join } from "node:path";
 import type { Result } from "./run";
 
 /**
- * 日志的一行。runId 是这行所属的 Run；它发起的调用、step、park 按发起顺序一起编号（seq），实现与装饰器的也一起编号。
+ * 日志的一行。runId 是这行所属的 Run；它发起的调用与 park 按发起顺序一起编号（seq），实现与装饰器的也一起编号。
  * 入参只存摘要：恢复时重新执行的 Run 会再发起同样的调用，按「序号、目标、入参摘要」比对。
  */
 export type Entry =
@@ -19,17 +19,14 @@ export type Entry =
   | { type: "call"; runId: string; seq: number; target: string; input: string; child?: string }
   /** 第 seq 个调用完成。同一个 Run 的 done 行的先后就是完成顺序 */
   | { type: "done"; runId: string; seq: number; result: Result }
-  /** step 取到的值：恢复时重放到这里直接给回，不再执行 */
-  | { type: "step"; runId: string; seq: number; name: string; value: unknown }
   /** 第 seq 步的 park 关闭：送来了值，或被撤回 */
   | { type: "park"; runId: string; seq: number; result: Result }
   /** 恢复时重新执行了这个 Run，这是第 attempt 次 */
   | { type: "retry"; runId: string; attempt: number };
 
-/** 日志里一个序号上记下的东西：调用（完成了才有 result）、step 的值、关闭了的 park 的产出 */
+/** 日志里一个序号上记下的东西：调用（完成了才有 result），或关闭了的 park 的产出 */
 export type Recorded =
   | { type: "call"; target: string; input: string; child?: string; result?: Result }
-  | { type: "step"; name: string; value: unknown }
   | { type: "park"; result: Result };
 
 /** 一个 Run 在日志里的记录：按序号记下的东西，与已执行了几次 */
@@ -50,7 +47,6 @@ export function fold(entries: Entry[]): Tree {
   for (const e of entries) {
     if (e.type === "root") root = { runId: e.runId, operation: e.operation, input: e.input };
     else if (e.type === "call") of(e.runId).entries.set(e.seq, { type: "call", target: e.target, input: e.input, child: e.child });
-    else if (e.type === "step") of(e.runId).entries.set(e.seq, { type: "step", name: e.name, value: e.value });
     else if (e.type === "park") of(e.runId).entries.set(e.seq, { type: "park", result: e.result });
     else if (e.type === "retry") of(e.runId).attempt = e.attempt;
     else {
