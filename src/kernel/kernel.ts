@@ -65,6 +65,8 @@ type LiveRun = {
   logs?: Map<string, RunLog>;
   /** 恢复时重新执行的 Run 按序号回放它自己的记录 */
   replay?: Replay;
+  /** 关停时被停在调用边界上：在等一个不会开始的调用或 park */
+  held?: boolean;
   /** 在途的子 Run */
   children: Set<LiveRun>;
   /** 经 ctx.park 等值时才有 */
@@ -87,6 +89,8 @@ export class Kernel {
   private readonly lives = new Map<string, LiveRun>();
   private readonly fuse: { maxDepth: number; maxLiveRuns: number };
   private stopping = false;
+  /** 关停时，没有正在执行的调用了（只剩停住的与 park）就兑现 */
+  private quiet?: PromiseWithResolvers<void>;
   private readonly journal?: Journal;
 
   constructor(private readonly config: KernelConfig = {}) {
@@ -186,19 +190,25 @@ export class Kernel {
   }
 
   /**
-   * 对外接口·关停（9.2）：不再接受新的外部调用，等在途的 Run 树收敛；到 timeoutMs 仍在途的按 killed 处理。
-   * 在途树内部的子调用照常进行，好让它们收敛。等 park 的树不会自己收敛，到时同样被杀，但 park 不关（不发 park.closed）。
-   * 被杀的树日志保留，停在被杀之前，重启后接着跑。
-   * 后续加入：harness.stopping 责任链（投递插件 flush、各插件清理）；
-   * 只剩 park 在等的树不必等到超时：日志已落盘，可以直接退出。
+   * 对外接口·关停（9.2）。不再接受新的外部调用，树里也不再开始新的：新发起的调用与 park 停在边界上，不执行、不记日志。
+   * 等正在执行的调用跑完；没有正在执行的了（只剩停住的与 park），或到 timeoutMs，就把在途的树按 shutdown 杀掉。
+   * stop(0) 即强杀，什么也不等。日志都保留：
+   * - 优雅关停停在干净的边界上，重启后已完成的回放、停住的调用照常发起，没有执行到一半的
+   * - 超时或强杀等同崩溃，在途的调用重启后重新执行，attempt 加一
+   * 被杀的树 park 不关（不发 park.closed）：它们没被回答，重启后用原 id 接着等。
+   * 后续加入：harness.stopping 责任链（投递插件 flush、各插件清理）。
    */
   async stop(timeoutMs: number): Promise<void> {
     this.stopping = true;
+    if (timeoutMs > 0) {
+      this.quiet = Promise.withResolvers();
+      this.checkQuiet();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<void>((resolve) => (timer = setTimeout(resolve, timeoutMs)));
+      await Promise.race([this.quiet.promise, timeout]);
+      clearTimeout(timer);
+    }
     const roots = [...this.lives.values()].filter((live) => !live.parent);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<void>((resolve) => (timer = setTimeout(resolve, timeoutMs)));
-    await Promise.race([Promise.all(roots.map((live) => live.done.promise)), timeout]);
-    clearTimeout(timer);
     for (const live of roots) if (this.lives.has(live.run.runId)) this.kill(live, "shutdown");
   }
 
@@ -208,9 +218,10 @@ export class Kernel {
    */
   private callChild(caller: LiveRun, name: string, input: unknown, surface?: Surface): Promise<Result> {
     const { run } = caller;
+    const alive = run.status === "running" || run.status === "waiting";
+    if (alive && this.stopping) return this.hold(caller);
     const seq = caller.issued++;
     const inputDigest = digest(input);
-    const alive = run.status === "running" || run.status === "waiting";
 
     // 恢复重放：这个序号上日志里有记录，先比对
     const recorded = alive ? caller.replay?.at(seq) : undefined;
@@ -390,10 +401,25 @@ export class Kernel {
   private forget(live: LiveRun, result: Result): void {
     this.lives.delete(live.run.runId);
     const { parent, seq } = live;
-    if (!parent || seq === undefined) return;
-    this.record(parent, { type: "done", runId: parent.run.runId, seq, result });
-    parent.children.delete(live);
-    this.refresh(parent);
+    if (parent && seq !== undefined) {
+      this.record(parent, { type: "done", runId: parent.run.runId, seq, result });
+      parent.children.delete(live);
+      this.refresh(parent);
+    }
+    this.checkQuiet();
+  }
+
+  /** 关停时停住 live 新发起的调用或 park：不执行、不记日志，永不兑现（进程随后退出，重启后照常发起） */
+  private hold(live: LiveRun): Promise<never> {
+    live.held = true;
+    this.checkQuiet();
+    return new Promise(() => {});
+  }
+
+  /** 关停中：在途的 Run 都在等子 Run、等 park 或被停住，没有正在执行的了 */
+  private checkQuiet(): void {
+    if (!this.quiet) return;
+    if ([...this.lives.values()].every((live) => live.held || live.run.status === "waiting")) this.quiet.resolve();
   }
 
   /** 在途 Run 在等子 Run 或等 unpark 时为 waiting，否则为 running（R8）；已结束的不动 */
@@ -423,6 +449,7 @@ export class Kernel {
     // 与 callChild 一样：不理会 ctx.signal、被杀后还在跑的代码不能再挂起
     if (run.status !== "running" && run.status !== "waiting") throw new Error(`run is ${run.status}`);
     if (live.park) throw new Error(`run ${run.runId} is already parked`);
+    if (this.stopping) return this.hold(live);
     const seq = live.issued++;
 
     // 恢复重放：崩溃前已回答或撤回的，按原完成顺序拿日志里的产出，不再问。

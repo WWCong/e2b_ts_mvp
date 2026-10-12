@@ -140,8 +140,8 @@ describe("取消", () => {
 });
 
 describe("关停", () => {
-  test("不再接受新的外部调用；在途的树在超时前收敛就正常退出，树内的子调用照常进行", async () => {
-    const { kernel, gate } = setup();
+  test("优雅关停：不再接受新的外部调用；正在执行的跑完，树里新发起的调用停在边界上不执行，随后按 shutdown 杀掉", async () => {
+    const { kernel, events, gate } = setup();
     kernel.register({
       name: "demo_later",
       input: z.null(),
@@ -152,14 +152,16 @@ describe("关停", () => {
     });
     const root = kernel.start("demo_later", null);
 
-    const stopping = kernel.stop(1_000);
+    // 超时给得很长：停下来靠的是「没有正在执行的了」，不是超时
+    const stopping = kernel.stop(60_000);
     expect(() => kernel.start("demo_later", null)).toThrow("harness is stopping");
     gate.resolve();
     await stopping;
-    expect(await kernel.reap(root)).toEqual({ ok: true, value: { ok: true, value: "late" } });
+    expect(await kernel.reap(root)).toEqual({ ok: false, by: "kernel", reason: "shutdown", retryable: false });
+    expect(events.filter((e) => e.type === "run.started").map((e) => e.operation)).toEqual(["demo_later"]);
   });
 
-  test("到超时仍在途的树按 killed 处理，原因是 shutdown", async () => {
+  test("到超时仍有正在执行的：按 killed 处理，原因是 shutdown", async () => {
     const { kernel, events } = setup();
     const root = kernel.start("demo_parent", null);
 
@@ -169,5 +171,15 @@ describe("关停", () => {
       ["demo_parent", "shutdown"],
       ["demo_child", "shutdown"],
     ]);
+  });
+
+  test("stop(0) 强杀：什么也不等，立即按 shutdown 杀掉", async () => {
+    const { kernel, events, gate } = setup();
+    const root = kernel.start("demo_parent", null);
+
+    await kernel.stop(0);
+    gate.resolve();
+    expect(await kernel.reap(root)).toMatchObject({ ok: false, reason: "shutdown" });
+    expect(events.filter((e) => e.type === "run.killed")).toHaveLength(2);
   });
 });

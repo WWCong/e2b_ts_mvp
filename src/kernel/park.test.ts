@@ -179,11 +179,11 @@ describe("park 与取消、关停", () => {
     expect(() => kernel.unpark(id, true)).toThrow(`not parked: ${id}`);
   });
 
-  test("关停：等 park 的树不会自己收敛，到超时被杀，但 park 不关", async () => {
+  test("关停：只剩 park 在等的树不必等到超时，直接按 shutdown 杀掉，但 park 不关", async () => {
     const { kernel, events } = setup();
     const root = kernel.start("demo_ask", "?");
 
-    await kernel.stop(5);
+    await kernel.stop(60_000);
     expect(await kernel.reap(root)).toMatchObject({ ok: false, by: "kernel", reason: "shutdown" });
     expect(events.map((e) => e.type)).toEqual(["run.started", "run.started", "park.opened", "run.killed", "run.killed"]);
   });

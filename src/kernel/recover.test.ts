@@ -191,6 +191,36 @@ describe("恢复", () => {
   });
 });
 
+describe("关停后恢复", () => {
+  /** 先调 demo_slow（10ms），再调 demo_count */
+  const flow = async (ctx: Ctx) => [await ctx.call("demo_slow", 10), await ctx.call("demo_count", 1)];
+  const both = { ok: true as const, value: [{ ok: true, value: 10 }, { ok: true, value: 10 }] };
+
+  test("优雅关停：正在执行的调用跑完再停，下一个停在边界上；重启后它不重做，停住的照常发起", async () => {
+    const one = boot(dir, { flow });
+    const root = one.kernel.start("demo_flow", null);
+    await one.kernel.stop(60_000);
+    expect(one.impls).toEqual(["demo_flow", "demo_slow"]);
+
+    const two = boot(dir, { flow });
+    two.kernel.recover();
+    expect(await two.kernel.reap(root)).toEqual(both);
+    expect(two.impls).toEqual(["demo_flow", "demo_count"]);
+  });
+
+  test("stop(0) 强杀：等同崩溃，正在执行的调用重启后重新执行，attempt 为 2", async () => {
+    const one = boot(dir, { flow });
+    const root = one.kernel.start("demo_flow", null);
+    await one.kernel.stop(0);
+
+    const two = boot(dir, { flow });
+    two.kernel.recover();
+    expect(await two.kernel.reap(root)).toEqual(both);
+    expect(two.impls).toEqual(["demo_flow", "demo_slow", "demo_count"]);
+    expect(two.events.find((e) => e.type === "run.started" && e.operation === "demo_slow")).toMatchObject({ attempt: 2 });
+  });
+});
+
 describe("恢复：回放的顺序与走法", () => {
   test("并发发出的调用：结果按崩溃前的完成顺序交还", async () => {
     // 先发的 20ms、后发的 1ms：崩溃前后发的先完成
