@@ -9,6 +9,7 @@ import { EventStream } from "./events";
 import { checkName } from "./names";
 import { reject, transition, type Ctx, type Rejected, type Result, type Run, type ToolSpec } from "./run";
 import { digest, fold, Journal, type Entry, type Recorded, type RunLog } from "./journal";
+import { isDone, Replay } from "./replay";
 import { inSurface, type Surface } from "./surface";
 
 /** ctx 之外恰好一个入参、返回 Promise；ctx 不算入参，不进 schema */
@@ -60,8 +61,10 @@ type LiveRun = {
   seq?: number;
   /** 这个 Run 已发起的调用与 park 的个数，即下一个的序号 */
   issued: number;
-  /** 恢复中的树里每个 Run 在日志里的记录：重新执行时按序号回放 */
+  /** 恢复中的树里每个 Run 在日志里的记录：在途的子 Run 重新执行时从这里取它的 */
   logs?: Map<string, RunLog>;
+  /** 恢复时重新执行的 Run 按序号回放它自己的记录 */
+  replay?: Replay;
   /** 在途的子 Run */
   children: Set<LiveRun>;
   /** 经 ctx.park 等值时才有 */
@@ -132,8 +135,8 @@ export class Kernel {
       const { root, runs } = fold(entries);
       const admitted = this.admit(root.operation, root.input, undefined, this.resume(root.runId, root.runId, runs));
       if ("ok" in admitted) {
-        // 根都建不起来（Operation 没了、入参不再合法）：恢复失败，日志删除
-        this.journal?.delete(root.runId);
+        // 根都建不起来（Operation 没了、入参不再合法）：恢复失败，日志留着排查
+        this.journal?.retire(root.runId);
         this.exits.set(root.runId, Promise.resolve(admitted));
       } else {
         this.exits.set(root.runId, this.execute(admitted));
@@ -210,17 +213,20 @@ export class Kernel {
     const alive = run.status === "running" || run.status === "waiting";
 
     // 恢复重放：这个序号上日志里有记录，先比对
-    const recorded = alive ? recordedAt(caller, seq) : undefined;
+    const recorded = alive ? caller.replay?.at(seq) : undefined;
+    const same = recorded?.type === "call" && recorded.target === name && recorded.input === inputDigest ? recorded : undefined;
+    // 已完成的那一步对不上：代码看过它的结果、据此往下走过，判为对不上。
+    // 崩溃时在途的那一步对不上（比如 attempt > 1 时先查重）：结果从没交给过代码，允许换路，旧的在途调用作废
+    if (recorded && !same && isDone(recorded)) {
+      const target = recorded.type === "call" && recorded.target === name;
+      return Promise.resolve(this.diverge(caller, seq, recorded, `call ${name}${target ? " with different input" : ""}`));
+    }
     let resume: Resume | undefined;
-    if (recorded) {
-      if (recorded.type !== "call" || recorded.target !== name || recorded.input !== inputDigest) {
-        const same = recorded.type === "call" && recorded.target === name;
-        return Promise.resolve(this.diverge(caller, seq, recorded, `call ${name}${same ? " with different input" : ""}`));
-      }
-      // 已完成：回送记下的结果，不执行、不过链、不再记
-      if (recorded.result) return Promise.resolve(recorded.result);
+    if (same) {
+      // 已完成：按原完成顺序回送记下的结果，不执行、不过链、不再记
+      if (same.result) return caller.replay!.deliver(same.order!, same.result);
       // 崩溃时在途：子 Run 用原 runId 重新执行
-      if (recorded.child) resume = this.resume(recorded.child, rootOf(caller).run.runId, caller.logs!);
+      if (same.child) resume = this.resume(same.child, rootOf(caller).run.runId, caller.logs!);
     }
 
     let admitted: Admitted | Rejected;
@@ -228,8 +234,8 @@ export class Kernel {
     else if (surface && !inSurface(surface, name)) admitted = reject("kernel", `${name} is not in the surface of ${run.operation}`);
     else admitted = this.admit(name, input, run, resume);
 
-    // 先记后做：调用连同它建的子 Run 落盘之后才开始执行。在途的调用日志里已有，不再记
-    if (!recorded) {
+    // 先记后做：调用连同它建的子 Run 落盘之后才开始执行。重新执行的在途调用日志里已有，不再记；换路的记一行覆盖旧的
+    if (!same) {
       const child = "ok" in admitted ? undefined : admitted.run.runId;
       this.record(caller, { type: "call", runId: run.runId, seq, target: name, input: inputDigest, child });
     }
@@ -287,12 +293,14 @@ export class Kernel {
   }
 
   private execute({ run, op, chain, logs }: Admitted, parent?: LiveRun, seq?: number): Promise<Result> {
+    const log = logs?.get(run.runId);
     const live: LiveRun = {
       run,
       parent,
       seq,
       issued: 0,
       logs,
+      replay: log && new Replay(log),
       children: new Set(),
       done: Promise.withResolvers(),
       abort: new AbortController(),
@@ -336,6 +344,9 @@ export class Kernel {
       }
       // 已被杀：不理会 ctx.signal 的实现照样跑完（JS 无法抢占），但结果作废
       if (run.status === "killed") return;
+      // 重新执行的 Run 结束了，日志里却还有没走到的已完成记录：它的效果发生过，新的路径不知道它
+      const missed = live.replay?.unreached(live.issued);
+      if (missed) return void this.diverge(live, ...missed, "exit");
 
       transition(run, "exited");
       this.forget(live, result);
@@ -414,11 +425,14 @@ export class Kernel {
     if (live.park) throw new Error(`run ${run.runId} is already parked`);
     const seq = live.issued++;
 
-    // 恢复重放：崩溃前已回答或撤回的，直接拿日志里的产出，不再问
-    const recorded = recordedAt(live, seq);
-    if (recorded && recorded.type !== "park") throw new Error(this.diverge(live, seq, recorded, "park").reason);
-    let result = recorded?.result;
-    if (!result) {
+    // 恢复重放：崩溃前已回答或撤回的，按原完成顺序拿日志里的产出，不再问。
+    // 这一步日志里是已完成的调用：对不上；是在途的调用：换路，照常开出
+    const recorded = live.replay?.at(seq);
+    let result: Result;
+    if (recorded?.type === "park") {
+      result = await live.replay!.deliver(recorded.order, recorded.result);
+    } else {
+      if (recorded && isDone(recorded)) throw new Error(this.diverge(live, seq, recorded, "park").reason);
       const closed = Promise.withResolvers<Result>();
       live.park = { seq, schema: z.fromJSONSchema(schema), closed };
       this.refresh(live);
@@ -429,11 +443,16 @@ export class Kernel {
     return result.value;
   }
 
-  /** 重放时比对不上：执行路径变了，前提已不成立，整棵树按 killed 处理、日志删除（R12） */
+  /**
+   * 重放时比对不上：代码看过的结果与它现在走的路接不上，前提已不成立（R12）。
+   * 整棵树按 killed 处理，日志移到 diverged/ 下留着排查。
+   */
   private diverge(live: LiveRun, seq: number, recorded: Recorded, actual: string): Rejected {
     const expected = recorded.type === "call" ? `call ${recorded.target}` : "park";
     const reason = `diverged at #${seq} of ${live.run.operation}: journal has ${expected}, got ${actual}`;
-    this.kill(rootOf(live), reason);
+    const root = rootOf(live);
+    this.journal?.retire(root.run.runId);
+    this.kill(root, reason);
     return reject("kernel", reason);
   }
 
@@ -456,11 +475,6 @@ export class Kernel {
       return reject(run.operation, err);
     }
   }
-}
-
-/** 恢复时这个 Run 在日志里该序号上记下的东西；不在恢复中，或已越过记录的末尾时没有 */
-function recordedAt(live: LiveRun, seq: number): Recorded | undefined {
-  return live.logs?.get(live.run.runId)?.entries.get(seq);
 }
 
 function rootOf(live: LiveRun): LiveRun {

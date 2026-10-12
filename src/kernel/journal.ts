@@ -4,7 +4,7 @@
  * 后续加入：长期存在的树压缩日志。
  */
 
-import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, truncateSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, truncateSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { Result } from "./run";
 
@@ -24,10 +24,13 @@ export type Entry =
   /** 恢复时重新执行了这个 Run，这是第 attempt 次 */
   | { type: "retry"; runId: string; attempt: number };
 
-/** 日志里一个序号上记下的东西：调用（完成了才有 result），或关闭了的 park 的产出 */
+/**
+ * 日志里一个序号上记下的东西：调用（完成了才有 result），或关闭了的 park 的产出。
+ * order 是完成顺序：这个 Run 的第几个完成的（调用与 park 一起数），已完成的才有。
+ */
 export type Recorded =
-  | { type: "call"; target: string; input: string; child?: string; result?: Result }
-  | { type: "park"; result: Result };
+  | { type: "call"; target: string; input: string; child?: string; result?: Result; order?: number }
+  | { type: "park"; result: Result; order: number };
 
 /** 一个 Run 在日志里的记录：按序号记下的东西，与已执行了几次 */
 export type RunLog = { entries: Map<number, Recorded>; attempt: number };
@@ -39,6 +42,12 @@ export type Tree = { root: { runId: string; operation: string; input: unknown };
 export function fold(entries: Entry[]): Tree {
   let root: Tree["root"] | undefined;
   const runs = new Map<string, RunLog>();
+  const completed = new Map<string, number>();
+  const nextOrder = (runId: string) => {
+    const order = completed.get(runId) ?? 0;
+    completed.set(runId, order + 1);
+    return order;
+  };
   const of = (runId: string): RunLog => {
     let log = runs.get(runId);
     if (!log) runs.set(runId, (log = { entries: new Map(), attempt: 1 }));
@@ -47,11 +56,11 @@ export function fold(entries: Entry[]): Tree {
   for (const e of entries) {
     if (e.type === "root") root = { runId: e.runId, operation: e.operation, input: e.input };
     else if (e.type === "call") of(e.runId).entries.set(e.seq, { type: "call", target: e.target, input: e.input, child: e.child });
-    else if (e.type === "park") of(e.runId).entries.set(e.seq, { type: "park", result: e.result });
+    else if (e.type === "park") of(e.runId).entries.set(e.seq, { type: "park", result: e.result, order: nextOrder(e.runId) });
     else if (e.type === "retry") of(e.runId).attempt = e.attempt;
     else {
       const call = of(e.runId).entries.get(e.seq);
-      if (call?.type === "call") call.result = e.result;
+      if (call?.type === "call") Object.assign(call, { result: e.result, order: nextOrder(e.runId) });
     }
   }
   if (!root) throw new Error("journal without root");
@@ -99,10 +108,22 @@ export class Journal {
 
   /** 树结束或被取消：关掉并删除它的日志 */
   delete(root: string): void {
+    this.close(root);
+    rmSync(this.path(root), { force: true });
+  }
+
+  /** 恢复失败（比对不上、根建不起来）：日志移到 diverged/ 下留着排查，不再恢复 */
+  retire(root: string): void {
+    this.close(root);
+    if (!existsSync(this.path(root))) return;
+    mkdirSync(join(this.dir, "diverged"), { recursive: true });
+    renameSync(this.path(root), join(this.dir, "diverged", `${root}.jsonl`));
+  }
+
+  private close(root: string): void {
     const fd = this.files.get(root);
     if (fd !== undefined) closeSync(fd);
     this.files.delete(root);
-    rmSync(this.path(root), { force: true });
   }
 
   private path(root: string): string {
