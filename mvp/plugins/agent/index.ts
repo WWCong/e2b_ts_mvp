@@ -8,7 +8,7 @@
 import type { AssistantMessage, Message, ToolCall } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { op } from "../../../src/kernel/harness";
-import type { Result } from "../../../src/kernel/run";
+import type { Ctx, Result } from "../../../src/kernel/run";
 
 const PERSONA =
   "你是工作区助手。需要查看或修改文件时使用工具；信息不够或有几种做法需要用户拍板时，用 ui_ask 问用户。做完后用中文简要回答用户。";
@@ -22,7 +22,7 @@ export const assist = op({
   only: ["fs", "model", "ui"],
   impl: async (ctx, input) => {
     const tools = ctx.tools();
-    const history: Message[] = [{ role: "user", content: input.prompt, timestamp: Date.now() }];
+    const history: Message[] = [{ role: "user", content: input.prompt, timestamp: await now(ctx) }];
 
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       const r = await ctx.call("model_complete", { systemPrompt: PERSONA, messages: history, tools });
@@ -32,14 +32,20 @@ export const assist = op({
       if (calls.length === 0) return { answer };
 
       const results = await Promise.all(calls.map((call) => ctx.call(call.name, call.arguments)));
-      calls.forEach((call, i) => history.push(toolResult(call, results[i]!)));
+      const timestamp = await now(ctx);
+      calls.forEach((call, i) => history.push(toolResult(call, results[i]!, timestamp)));
     }
     throw new Error(`no answer after ${MAX_TURNS} turns`);
   },
 });
 
+/** 消息的时间戳经 ctx.step 取：恢复重放时给回当初的值，交给模型的历史与原来一致，调用才比对得上 */
+function now(ctx: Ctx): Promise<number> {
+  return ctx.step("now", () => Date.now());
+}
+
 /** 调用结果写成给模型看的工具结果：成功给值，被拒给拒绝的来由 */
-function toolResult(call: ToolCall, result: Result): Message {
+function toolResult(call: ToolCall, result: Result, timestamp: number): Message {
   const text = result.ok
     ? typeof result.value === "string"
       ? result.value
@@ -51,6 +57,6 @@ function toolResult(call: ToolCall, result: Result): Message {
     toolName: call.name,
     content: [{ type: "text", text }],
     isError: !result.ok,
-    timestamp: Date.now(),
+    timestamp,
   };
 }

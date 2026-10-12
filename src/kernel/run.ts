@@ -15,9 +15,13 @@ export type ToolSpec = { name: string; description: string; inputSchema: Record<
 
 /**
  * 内核交给实现与装饰器的句柄，绑定在一个 Run 上。
- * 后续加入：spawn、emit，以及 depth、replaying 等只读信息。
+ * 后续加入：spawn、emit、state（get / set），以及 depth 等只读信息。
  */
 export type Ctx = {
+  /** 这个 Run 的 runId。崩溃恢复后重新执行时不变，可当幂等键交给外部系统（如邮件的 Message-ID） */
+  runId: string;
+  /** 第几次执行：平时是 1；崩溃时正在执行、恢复后重新执行的加一。大于 1 时之前的执行可能已生效一部分 */
+  attempt: number;
   /** 发起这个 Run 的子调用并等它返回；拒绝作为结果返回（5.3） */
   call(name: string, input: unknown): Promise<Result>;
   /** Run 被杀（取消或关停）时 abort。传给 fetch、子进程等支持它的 API，IO 当场中止 */
@@ -30,6 +34,11 @@ export type Ctx = {
    * 一般不直接用，而是调 park Operation（stdlib_park），好让装饰器看得到这次挂起。装饰器的 ctx 没有它。
    */
   park(req: { schema: Record<string, unknown>; payload: unknown }): Promise<unknown>;
+  /**
+   * 取一个不确定的值（时间、随机数、uuid）：第一次执行 fn 并把值记进日志，恢复重放时直接给回记下的值，不再执行。
+   * 值要能 JSON 序列化。只用来读：对外部世界的副作用要做成 Operation，才过装饰器链、有 attempt 与幂等键。
+   */
+  step<T>(name: string, fn: () => T | Promise<T>): Promise<T>;
 };
 
 /** 把异常或原因转成拒绝结果 */
@@ -48,8 +57,9 @@ export type Run = {
   readonly depth: number;
   /** 父 Run 的 runId；根 Run 没有 */
   readonly parent?: string;
-  // 后续按需加入（附 A）：spawnedBy、operations（能力面）、
-  // context、limits、counters、replaying、calls
+  /** 第几次执行，同 ctx.attempt */
+  readonly attempt: number;
+  // 后续按需加入（附 A）：spawnedBy、operations（能力面）、context、limits
 };
 
 /** 合法转换。init → running 即进入装饰器链 */

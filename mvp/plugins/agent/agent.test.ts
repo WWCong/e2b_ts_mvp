@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { cpSync } from "node:fs";
 import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -153,5 +154,43 @@ describe("agent_assist", () => {
       by: "agent_assist",
       reason: "model_complete rejected by model_complete: No more faux responses queued",
     });
+  });
+});
+
+describe("崩溃恢复", () => {
+  /** 一个带写前日志的内核，装上与入口相同的插件 */
+  async function boot(journalDir: string) {
+    const k = new Kernel({ journalDir });
+    const opened: string[] = [];
+    k.events.subscribe((e) => e.type === "park.opened" && opened.push(e.runId));
+    await loadPlugin(k, join(import.meta.dir, "..", "..", "..", "src", "plugins", "stdlib"));
+    for (const pkg of ["fs", "model", "ui", "agent"]) await loadPlugin(k, join(import.meta.dir, "..", pkg));
+    return { k, opened };
+  }
+
+  test("问人时进程没了：恢复后不重复调模型，问题用原 id 重新开出，回答后接着跑完", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-journal-"));
+    faux.setResponses([
+      step(fauxToolCall("ui_ask", { question: "用哪种格式？", options: ["md", "txt"] })),
+      step(fauxText("好的，用 txt")),
+    ]);
+    const one = await boot(dir);
+    const root = one.k.start("agent_assist", { prompt: "写个笔记" });
+    await Bun.sleep(5);
+    expect(one.opened).toHaveLength(1);
+
+    // 「崩溃」：把此刻的日志拷一份，新内核从拷贝恢复
+    const copy = `${dir}-crash`;
+    cpSync(dir, copy, { recursive: true });
+    const two = await boot(copy);
+    expect(two.k.recover()).toEqual([root]);
+    await Bun.sleep(5);
+    expect(two.opened).toEqual(one.opened);
+
+    two.k.unpark(two.opened[0]!, { option: "txt" });
+    expect(await two.k.reap(root)).toEqual({ ok: true, value: { answer: "好的，用 txt" } });
+    // 第一轮的模型调用从日志回放，没有再发请求：两次请求分别来自崩溃前与恢复后
+    expect(requests).toHaveLength(2);
+    expect(toolResultsIn(1)).toEqual([{ name: "ui_ask", isError: false, text: '{"option":"txt"}' }]);
   });
 });

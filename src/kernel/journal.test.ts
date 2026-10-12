@@ -104,7 +104,7 @@ describe("写前日志", () => {
     kernel.unpark(park, true);
     await Bun.sleep(1);
     expect(lastLineAt).toEqual({
-      "park.closed": { type: "park", runId: park, result: { ok: true, value: true } },
+      "park.closed": { type: "park", runId: park, seq: 0, result: { ok: true, value: true } },
       "run.exited": { type: "done", runId: root, seq: 0, result: { ok: true, value: true } },
     });
     expect(events.at(-1)).toMatchObject({ type: "run.exited", runId: root });

@@ -1,5 +1,5 @@
 /**
- * 内核：注册表、Run 的创建与执行、挂起，对外的调用、收割、送值与撤回、取消与关停接口。
+ * 内核：注册表、Run 的创建与执行、挂起，对外的调用、收割、送值与撤回、取消、关停与恢复接口。
  * 内核不注册任何 Operation，注册表里的全部来自装载的插件；park 的 Operation 形式在 stdlib 插件里。
  */
 
@@ -8,7 +8,7 @@ import { runChain, type DecoratorCtx, type DecoratorDef } from "./chain";
 import { EventStream } from "./events";
 import { checkName } from "./names";
 import { reject, transition, type Ctx, type Rejected, type Result, type Run, type ToolSpec } from "./run";
-import { digest, Journal, type Entry } from "./journal";
+import { digest, fold, Journal, type Entry, type Recorded, type RunLog } from "./journal";
 import { inSurface, type Surface } from "./surface";
 
 /** ctx 之外恰好一个入参、返回 Promise；ctx 不算入参，不进 schema */
@@ -43,11 +43,14 @@ export type KernelConfig = {
 
 const FUSE_DEFAULTS = { maxDepth: 32, maxLiveRuns: 1024 };
 
-/** 等待中的 park：送来的值按 schema 校验；closed 在关闭时带着产出兑现 */
-type Park = { schema: z.ZodType; closed: PromiseWithResolvers<Result> };
+/** 等待中的 park：它是这个 Run 的第 seq 步；送来的值按 schema 校验；closed 在关闭时带着产出兑现 */
+type Park = { seq: number; schema: z.ZodType; closed: PromiseWithResolvers<Result> };
 
-/** 通过检查、待执行的 Run */
-type Admitted = { run: Run; op: Operation; chain: DecoratorDef[] };
+/** 恢复时重新执行一个 Run：沿用原 runId，attempt 加一；logs 是这棵树里每个 Run 在日志里的记录 */
+type Resume = { runId: string; attempt: number; logs: Map<string, RunLog> };
+
+/** 通过检查、待执行的 Run；恢复时重新执行的带着树的日志记录 */
+type Admitted = { run: Run; op: Operation; chain: DecoratorDef[]; logs?: Map<string, RunLog> };
 
 /** 在途 Run 的内核侧记录；Run 退出或被杀后移除 */
 type LiveRun = {
@@ -55,8 +58,10 @@ type LiveRun = {
   parent?: LiveRun;
   /** 这个 Run 是父的第几个调用；根 Run 没有 */
   seq?: number;
-  /** 这个 Run 已发起的调用数，即下一个调用的序号 */
+  /** 这个 Run 已发起的调用、step、park 的个数，即下一个的序号 */
   issued: number;
+  /** 恢复中的树里每个 Run 在日志里的记录：重新执行时按序号回放 */
+  logs?: Map<string, RunLog>;
   /** 在途的子 Run */
   children: Set<LiveRun>;
   /** 经 ctx.park 等值时才有 */
@@ -114,6 +119,27 @@ export class Kernel {
     this.journal?.append(runId, { type: "root", runId, operation: name, input });
     this.exits.set(runId, this.execute(admitted));
     return admitted.run.runId;
+  }
+
+  /**
+   * 对外接口·恢复：读写前日志，重建所有没结束的树，返回它们根的 runId 供收割。装载完插件后调用。
+   * 根与崩溃时正在执行的 Run 用原 runId 重新执行，attempt 加一。重新执行时按序号回放：
+   * 已完成的调用回送记下的结果（不执行、不过链），step 给回记下的值，已回答的 park 直接拿到回答，没回答的用原 id 重新开出。
+   */
+  recover(): string[] {
+    if (!this.journal) return [];
+    return this.journal.readAll().map((entries) => {
+      const { root, runs } = fold(entries);
+      const admitted = this.admit(root.operation, root.input, undefined, this.resume(root.runId, root.runId, runs));
+      if ("ok" in admitted) {
+        // 根都建不起来（Operation 没了、入参不再合法）：恢复失败，日志删除
+        this.journal?.delete(root.runId);
+        this.exits.set(root.runId, Promise.resolve(admitted));
+      } else {
+        this.exits.set(root.runId, this.execute(admitted));
+      }
+      return root.runId;
+    });
   }
 
   /** 对外接口·收割：等 Run 退出并取走结果 */
@@ -180,14 +206,33 @@ export class Kernel {
   private callChild(caller: LiveRun, name: string, input: unknown, surface?: Surface): Promise<Result> {
     const { run } = caller;
     const seq = caller.issued++;
-    let admitted: Admitted | Rejected;
-    if (run.status === "exited" || run.status === "killed") admitted = reject("kernel", `caller is ${run.status}`);
-    else if (surface && !inSurface(surface, name)) admitted = reject("kernel", `${name} is not in the surface of ${run.operation}`);
-    else admitted = this.admit(name, input, run);
+    const inputDigest = digest(input);
+    const alive = run.status === "running" || run.status === "waiting";
 
-    // 先记后做：调用连同它建的子 Run 落盘之后才开始执行
-    const child = "ok" in admitted ? undefined : admitted.run.runId;
-    this.record(caller, { type: "call", runId: run.runId, seq, target: name, input: digest(input), child });
+    // 恢复重放：这个序号上日志里有记录，先比对
+    const recorded = alive ? recordedAt(caller, seq) : undefined;
+    let resume: Resume | undefined;
+    if (recorded) {
+      if (recorded.type !== "call" || recorded.target !== name || recorded.input !== inputDigest) {
+        const same = recorded.type === "call" && recorded.target === name;
+        return Promise.resolve(this.diverge(caller, seq, recorded, `call ${name}${same ? " with different input" : ""}`));
+      }
+      // 已完成：回送记下的结果，不执行、不过链、不再记
+      if (recorded.result) return Promise.resolve(recorded.result);
+      // 崩溃时在途：子 Run 用原 runId 重新执行
+      if (recorded.child) resume = this.resume(recorded.child, rootOf(caller).run.runId, caller.logs!);
+    }
+
+    let admitted: Admitted | Rejected;
+    if (!alive) admitted = reject("kernel", `caller is ${run.status}`);
+    else if (surface && !inSurface(surface, name)) admitted = reject("kernel", `${name} is not in the surface of ${run.operation}`);
+    else admitted = this.admit(name, input, run, resume);
+
+    // 先记后做：调用连同它建的子 Run 落盘之后才开始执行。在途的调用日志里已有，不再记
+    if (!recorded) {
+      const child = "ok" in admitted ? undefined : admitted.run.runId;
+      this.record(caller, { type: "call", runId: run.runId, seq, target: name, input: inputDigest, child });
+    }
     if ("ok" in admitted) {
       this.record(caller, { type: "done", runId: run.runId, seq, result: admitted });
       this.events.emit({ type: "call.rejected", runId: run.runId, target: name, input, result: admitted });
@@ -200,7 +245,7 @@ export class Kernel {
    * 建 Run 前的检查（目标存在、保险丝、链能解析、入参符合 schema），通过则建出 Run；
    * 不通过以拒绝返回，不建 Run。
    */
-  private admit(name: string, input: unknown, parent?: Run): Admitted | Rejected {
+  private admit(name: string, input: unknown, parent?: Run, resume?: Resume): Admitted | Rejected {
     const op = this.operations.get(name);
     if (!op) return reject("kernel", `unknown operation: ${name}`);
 
@@ -223,22 +268,31 @@ export class Kernel {
     }
 
     const run: Run = {
-      runId: crypto.randomUUID(),
+      runId: resume?.runId ?? crypto.randomUUID(),
       operation: name,
       input: parsed.data,
       status: "init",
       depth,
       parent: parent?.runId,
+      attempt: resume?.attempt ?? 1,
     };
-    return { run, op, chain };
+    return { run, op, chain, logs: resume?.logs };
   }
 
-  private execute({ run, op, chain }: Admitted, parent?: LiveRun, seq?: number): Promise<Result> {
+  /** 恢复时重新执行一个 Run：attempt 在上次的基础上加一，先记一行 retry（再崩一次还能接着加） */
+  private resume(runId: string, root: string, logs: Map<string, RunLog>): Resume {
+    const attempt = (logs.get(runId)?.attempt ?? 1) + 1;
+    this.journal?.append(root, { type: "retry", runId, attempt });
+    return { runId, attempt, logs };
+  }
+
+  private execute({ run, op, chain, logs }: Admitted, parent?: LiveRun, seq?: number): Promise<Result> {
     const live: LiveRun = {
       run,
       parent,
       seq,
       issued: 0,
+      logs,
       children: new Set(),
       done: Promise.withResolvers(),
       abort: new AbortController(),
@@ -258,17 +312,23 @@ export class Kernel {
       parent: run.parent,
       depth: run.depth,
       chain: chain.map((d) => d.id),
+      attempt: run.attempt > 1 ? run.attempt : undefined,
     });
 
     // 实现的调用查它自己的能力面；装饰器的调用同样记在这个 Run 名下，但不查它的能力面（4.1）
     const { signal } = live.abort;
+    const { runId, attempt } = run;
+    const step: Ctx["step"] = (name, fn) => this.step(live, name, fn);
     const ctx: Ctx = {
+      runId,
+      attempt,
       call: (name, input) => this.callChild(live, name, input, op),
       signal,
       tools: () => this.toolsIn(op),
       park: (req) => this.park(live, req),
+      step,
     };
-    const decoratorCtx: DecoratorCtx = { call: (name, input) => this.callChild(live, name, input), signal };
+    const decoratorCtx: DecoratorCtx = { runId, attempt, call: (name, input) => this.callChild(live, name, input), signal, step };
 
     const settle = async () => {
       const result = await runChain(decoratorCtx, run, chain, () => this.invoke(ctx, run, op), this.events);
@@ -291,15 +351,15 @@ export class Kernel {
   }
 
   /**
-   * 杀掉 live 及其子孙：自己先转 killed（取消时关掉它的 park）、abort 它的 signal，再杀子 Run；
-   * 等它的一方拿到内核的拒绝结果。
+   * 杀掉 live 及其子孙：自己先转 killed（关掉它的 park）、abort 它的 signal，再杀子 Run；
+   * 等它的一方拿到内核的拒绝结果。reason：cancelled、shutdown，或重放比对不上时的 diverged …
    * 关停不关 park、不删日志：它们没被回答、没被取消，重启后接着跑。
    */
-  private kill(live: LiveRun, reason: "cancelled" | "shutdown"): void {
+  private kill(live: LiveRun, reason: string): void {
     transition(live.run, "killed");
     this.events.emit({ type: "run.killed", runId: live.run.runId, operation: live.run.operation, reason });
-    if (reason === "cancelled") {
-      // 取消了整棵树：日志随之删除
+    if (reason !== "shutdown") {
+      // 整棵树作废：日志随之删除
       if (!live.parent) this.journal?.delete(live.run.runId);
       if (live.park) this.closePark(live, live.park, reject("kernel", reason));
     }
@@ -354,19 +414,49 @@ export class Kernel {
     // 与 callChild 一样：不理会 ctx.signal、被杀后还在跑的代码不能再挂起
     if (run.status !== "running" && run.status !== "waiting") throw new Error(`run is ${run.status}`);
     if (live.park) throw new Error(`run ${run.runId} is already parked`);
-    const closed = Promise.withResolvers<Result>();
-    live.park = { schema: z.fromJSONSchema(schema), closed };
-    this.refresh(live);
-    this.events.emit({ type: "park.opened", runId: run.runId, schema, payload });
+    const seq = live.issued++;
 
-    const result = await closed.promise;
+    // 恢复重放：崩溃前已回答或撤回的，直接拿日志里的产出，不再问
+    const recorded = recordedAt(live, seq);
+    if (recorded && recorded.type !== "park") throw new Error(this.diverge(live, seq, recorded, "park").reason);
+    let result = recorded?.result;
+    if (!result) {
+      const closed = Promise.withResolvers<Result>();
+      live.park = { seq, schema: z.fromJSONSchema(schema), closed };
+      this.refresh(live);
+      this.events.emit({ type: "park.opened", runId: run.runId, schema, payload });
+      result = await closed.promise;
+    }
     if (!result.ok) throw new Error(result.reason);
     return result.value;
   }
 
+  /** ctx.step 的实现：重放时给回日志里记下的值；否则执行 fn，值落盘后才返回 */
+  private async step<T>(live: LiveRun, name: string, fn: () => T | Promise<T>): Promise<T> {
+    const { run } = live;
+    if (run.status !== "running" && run.status !== "waiting") throw new Error(`run is ${run.status}`);
+    const seq = live.issued++;
+    const recorded = recordedAt(live, seq);
+    if (recorded) {
+      if (recorded.type === "step" && recorded.name === name) return recorded.value as T;
+      throw new Error(this.diverge(live, seq, recorded, `step ${name}`).reason);
+    }
+    const value = await fn();
+    this.record(live, { type: "step", runId: run.runId, seq, name, value });
+    return value;
+  }
+
+  /** 重放时比对不上：执行路径变了，前提已不成立，整棵树按 killed 处理、日志删除（R12） */
+  private diverge(live: LiveRun, seq: number, recorded: Recorded, actual: string): Rejected {
+    const expected = recorded.type === "call" ? `call ${recorded.target}` : recorded.type === "step" ? `step ${recorded.name}` : "park";
+    const reason = `diverged at #${seq} of ${live.run.operation}: journal has ${expected}, got ${actual}`;
+    this.kill(rootOf(live), reason);
+    return reject("kernel", reason);
+  }
+
   /** 先落盘，再转回 running（被杀的除外）、发 park.closed，最后把结果交给等待的实现 */
   private closePark(live: LiveRun, park: Park, result: Result): void {
-    this.record(live, { type: "park", runId: live.run.runId, result });
+    this.record(live, { type: "park", runId: live.run.runId, seq: park.seq, result });
     live.park = undefined;
     this.refresh(live);
     this.events.emit({ type: "park.closed", runId: live.run.runId, result });
@@ -383,6 +473,11 @@ export class Kernel {
       return reject(run.operation, err);
     }
   }
+}
+
+/** 恢复时这个 Run 在日志里该序号上记下的东西；不在恢复中，或已越过记录的末尾时没有 */
+function recordedAt(live: LiveRun, seq: number): Recorded | undefined {
+  return live.logs?.get(live.run.runId)?.entries.get(seq);
 }
 
 function rootOf(live: LiveRun): LiveRun {
