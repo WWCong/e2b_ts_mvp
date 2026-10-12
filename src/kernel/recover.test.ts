@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import type { HarnessEvent } from "./events";
+import { digest } from "./journal";
 import { Kernel } from "./kernel";
 import type { Ctx } from "./run";
 
@@ -185,9 +186,50 @@ describe("恢复", () => {
     const twoDir = crash(dir);
 
     const bare = new Kernel({ journalDir: twoDir });
+    const killed: HarnessEvent[] = [];
+    bare.events.subscribe((e) => e.type === "run.killed" && killed.push(e));
     expect(bare.recover()).toEqual([root]);
+    expect(killed).toMatchObject([{ runId: root, operation: "demo_flow", reason: "unknown operation: demo_flow" }]);
     expect(await bare.reap(root)).toMatchObject({ ok: false, by: "kernel", reason: "unknown operation: demo_flow" });
     expect(readdirSync(join(twoDir, "diverged"))).toEqual([`${root}.jsonl`]);
+  });
+});
+
+describe("恢复的事件", () => {
+  test("tree.recovered：列出已完成的调用（带结果）与要重新执行的 Run；产物没变；每条事件带这次启动的 boot", async () => {
+    const one = boot(dir);
+    const root = one.kernel.start("demo_flow", null);
+    await Bun.sleep(1);
+    const park = one.parks()[0]!.runId;
+
+    const two = boot(crash(dir));
+    two.kernel.recover();
+    expect(two.events[0]).toMatchObject({
+      type: "tree.recovered",
+      runId: root,
+      replayed: [
+        { runId: root, seq: 0, type: "call", target: "demo_count", input: digest(1), result: { ok: true, value: 10 }, order: 0 },
+      ],
+      inflight: [root, park],
+      artifactChanged: false,
+    });
+    expect(new Set(one.events.map((e) => e.boot))).toEqual(new Set([one.kernel.events.boot]));
+    expect(new Set(two.events.map((e) => e.boot))).toEqual(new Set([two.kernel.events.boot]));
+    expect(two.kernel.events.boot).not.toBe(one.kernel.events.boot);
+  });
+
+  test("装配的产物变了：artifactChanged 为 true，只提示，照常恢复", async () => {
+    const one = boot(dir);
+    const root = one.kernel.start("demo_flow", null);
+    await Bun.sleep(1);
+
+    const two = boot(crash(dir));
+    two.kernel.register({ name: "demo_extra", input: z.null(), impl: async () => null });
+    two.kernel.recover();
+    expect(two.events[0]).toMatchObject({ type: "tree.recovered", artifactChanged: true });
+    await Bun.sleep(1);
+    two.kernel.unpark(two.parks()[0]!.runId, "yes");
+    expect(await two.kernel.reap(root)).toMatchObject({ ok: true });
   });
 });
 

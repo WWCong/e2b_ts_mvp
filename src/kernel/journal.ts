@@ -13,8 +13,8 @@ import type { Result } from "./run";
  * 入参只存摘要：恢复时重新执行的 Run 会再发起同样的调用，按「序号、目标、入参摘要」比对。
  */
 export type Entry =
-  /** 第一行：树的根与外部给的入参 */
-  | { type: "root"; runId: string; operation: string; input: unknown }
+  /** 第一行：树的根与外部给的入参；artifact 是当时装配的产物摘要，恢复时比对 */
+  | { type: "root"; runId: string; operation: string; input: unknown; artifact: string }
   /** 发起了一个调用；建了子 Run 时记下它的 runId，在内核就被拒的没有 */
   | { type: "call"; runId: string; seq: number; target: string; input: string; child?: string }
   /** 第 seq 个调用完成。同一个 Run 的 done 行的先后就是完成顺序 */
@@ -36,7 +36,7 @@ export type Recorded =
 export type RunLog = { entries: Map<number, Recorded>; attempt: number };
 
 /** 一棵没结束的树：根，与树里每个 Run 的记录 */
-export type Tree = { root: { runId: string; operation: string; input: unknown }; runs: Map<string, RunLog> };
+export type Tree = { root: { runId: string; operation: string; input: unknown; artifact: string }; runs: Map<string, RunLog> };
 
 /** 把一棵树的日志按行归并成每个 Run 的记录 */
 export function fold(entries: Entry[]): Tree {
@@ -54,7 +54,7 @@ export function fold(entries: Entry[]): Tree {
     return log;
   };
   for (const e of entries) {
-    if (e.type === "root") root = { runId: e.runId, operation: e.operation, input: e.input };
+    if (e.type === "root") root = { runId: e.runId, operation: e.operation, input: e.input, artifact: e.artifact };
     else if (e.type === "call") of(e.runId).entries.set(e.seq, { type: "call", target: e.target, input: e.input, child: e.child });
     else if (e.type === "park") of(e.runId).entries.set(e.seq, { type: "park", result: e.result, order: nextOrder(e.runId) });
     else if (e.type === "retry") of(e.runId).attempt = e.attempt;

@@ -92,6 +92,8 @@ export class Kernel {
   /** 关停时，没有正在执行的调用了（只剩停住的与 park）就兑现 */
   private quiet?: PromiseWithResolvers<void>;
   private readonly journal?: Journal;
+  /** 产物摘要的缓存；注册了新的 Operation 或装饰器就作废 */
+  private artifactDigest?: string;
 
   constructor(private readonly config: KernelConfig = {}) {
     this.fuse = { ...FUSE_DEFAULTS, ...config.kernel };
@@ -109,12 +111,14 @@ export class Kernel {
       this.tools.set(op.name, { name: op.name, description: op.usage, inputSchema });
     }
     this.operations.set(op.name, op);
+    this.artifactDigest = undefined;
   }
 
   /** 注册只是放进注册表；进不进默认集由装配配置决定（6.4） */
   registerDecorator(def: DecoratorDef): void {
     if (this.decorators.has(def.id)) throw new Error(`duplicate decorator: ${def.id}`);
     this.decorators.set(def.id, def);
+    this.artifactDigest = undefined;
   }
 
   /** 对外接口·调用：按名字起一棵 Run 树，返回根 Run 的 runId */
@@ -123,7 +127,7 @@ export class Kernel {
     const admitted = this.admit(name, input);
     if ("ok" in admitted) throw new Error(admitted.reason);
     const { runId } = admitted.run;
-    this.journal?.append(runId, { type: "root", runId, operation: name, input });
+    this.journal?.append(runId, { type: "root", runId, operation: name, input, artifact: this.artifact() });
     this.exits.set(runId, this.execute(admitted));
     return admitted.run.runId;
   }
@@ -137,10 +141,26 @@ export class Kernel {
     if (!this.journal) return [];
     return this.journal.readAll().map((entries) => {
       const { root, runs } = fold(entries);
+      const logs = [...runs];
+      this.events.emit({
+        type: "tree.recovered",
+        runId: root.runId,
+        replayed: logs.flatMap(([runId, log]) =>
+          [...log.entries].filter(([, recorded]) => isDone(recorded)).map(([seq, recorded]) => ({ runId, seq, ...recorded })),
+        ),
+        inflight: [
+          root.runId,
+          ...logs.flatMap(([, log]) =>
+            [...log.entries.values()].flatMap((r) => (r.type === "call" && !r.result && r.child ? [r.child] : [])),
+          ),
+        ],
+        artifactChanged: root.artifact !== this.artifact(),
+      });
       const admitted = this.admit(root.operation, root.input, undefined, this.resume(root.runId, root.runId, runs));
       if ("ok" in admitted) {
         // 根都建不起来（Operation 没了、入参不再合法）：恢复失败，日志留着排查
         this.journal?.retire(root.runId);
+        this.events.emit({ type: "run.killed", runId: root.runId, operation: root.operation, reason: admitted.reason });
         this.exits.set(root.runId, Promise.resolve(admitted));
       } else {
         this.exits.set(root.runId, this.execute(admitted));
@@ -329,6 +349,7 @@ export class Kernel {
       operation: run.operation,
       input: run.input,
       parent: run.parent,
+      callSeq: seq,
       depth: run.depth,
       chain: chain.map((d) => d.id),
       attempt: run.attempt > 1 ? run.attempt : undefined,
@@ -388,6 +409,23 @@ export class Kernel {
     const result = reject("kernel", reason);
     this.forget(live, result);
     live.done.resolve(result);
+  }
+
+  /**
+   * 产物摘要：装配了哪些 Operation 与装饰器、它们的声明与代码，加上默认装饰器集。
+   * 写进日志的根行，恢复时比对：不同只在 tree.recovered 里提示，逐个调用比对兜底。
+   */
+  private artifact(): string {
+    this.artifactDigest ??= digest({
+      operations: [...this.operations.values()]
+        .sort((a, b) => (a.name < b.name ? -1 : 1))
+        .map(({ name, usage, public: isPublic, decorators, only, exclude, impl }) => [name, usage, isPublic, decorators, only, exclude, String(impl)]),
+      decorators: [...this.decorators.values()]
+        .sort((a, b) => (a.id < b.id ? -1 : 1))
+        .map(({ id, onError, fn }) => [id, onError, String(fn)]),
+      defaultDecorators: this.config.defaultDecorators,
+    });
+    return this.artifactDigest;
   }
 
   /** 能力面里的公开 Operation，按名字排序 */

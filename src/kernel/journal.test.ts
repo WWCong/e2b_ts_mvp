@@ -50,7 +50,7 @@ function setup() {
 
 describe("写前日志", () => {
   test("根与外部入参；调用发起记 call（带子 Run），完成记 done；实现与装饰器的调用一起编号，内核拒绝的也记", async () => {
-    const { kernel, lines, parkIds } = setup();
+    const { kernel, events, lines, parkIds } = setup();
     kernel.registerDecorator({
       id: "test_log",
       onError: "closed",
@@ -74,7 +74,7 @@ describe("写前日志", () => {
 
     const child = expect.any(String);
     expect(lines(root)).toEqual([
-      { type: "root", runId: root, operation: "demo_flow", input: "删除 a.txt？" },
+      { type: "root", runId: root, operation: "demo_flow", input: "删除 a.txt？", artifact: expect.any(String) },
       { type: "call", runId: root, seq: 0, target: "demo_echo", input: digest("decorator"), child },
       { type: "done", runId: root, seq: 0, result: { ok: true, value: "decorator" } },
       { type: "call", runId: root, seq: 1, target: "demo_echo", input: digest("hi"), child },
@@ -87,6 +87,14 @@ describe("写前日志", () => {
         result: { ok: false, by: "kernel", reason: "unknown operation: demo_nope", retryable: false },
       },
       { type: "call", runId: root, seq: 3, target: "demo_park", input: digest(ask("删除 a.txt？")), child: parkIds()[0] },
+    ]);
+    // run.started 的 callSeq 与 call 行的 seq 对得上；根 Run 没有
+    const started = events.filter((e) => e.type === "run.started");
+    expect(started.map((e) => [e.operation, e.callSeq])).toEqual([
+      ["demo_flow", undefined],
+      ["demo_echo", 0],
+      ["demo_echo", 1],
+      ["demo_park", 3],
     ]);
   });
 
