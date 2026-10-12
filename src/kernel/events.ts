@@ -53,7 +53,19 @@ export type EventBody =
  */
 export type HarnessEvent = EventBody & { boot: string; seq: number; ts: number };
 
-export type Subscriber = (event: HarnessEvent) => void;
+/** 订阅者可以是 async：不等它返回 */
+export type Subscriber = (event: HarnessEvent) => unknown;
+
+/** 调一个通知类的回调：不等它，出错（同步抛出或 Promise 拒绝）都只记下，不影响调用方 */
+export function notify(what: string, fn: () => unknown): void {
+  const failed = (err: unknown) => console.error(`[harness] ${what} failed`, err);
+  try {
+    const r = fn();
+    if (r instanceof Promise) r.catch(failed);
+  } catch (err) {
+    failed(err);
+  }
+}
 
 export class EventStream {
   readonly boot = Bun.randomUUIDv7();
@@ -66,13 +78,7 @@ export class EventStream {
 
   emit(body: EventBody): void {
     const event: HarnessEvent = { ...body, boot: this.boot, seq: ++this.seq, ts: Date.now() };
-    for (const fn of this.subscribers) {
-      try {
-        fn(event);
-      } catch (err) {
-        // 订阅者出错不影响 Run 与其他订阅者
-        console.error(`[harness] subscriber failed on event #${event.seq}`, err);
-      }
-    }
+    // 订阅者出错不影响 Run 与其他订阅者
+    for (const fn of this.subscribers) notify(`subscriber on event #${event.seq}`, () => fn(event));
   }
 }

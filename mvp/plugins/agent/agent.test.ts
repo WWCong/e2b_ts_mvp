@@ -27,23 +27,37 @@ let requests: TranscriptContext[];
 /** 人依次给出的回答：每开一个 park 取一个 */
 let answers: Answer[];
 
-beforeAll(async () => {
+beforeAll(() => {
   models.setProvider(faux.provider);
-  kernel = new Kernel();
-  kernel.events.subscribe((e) => events.push(e));
-  kernel.events.subscribe((e) => e.type === "park.opened" && queueMicrotask(() => kernel.unpark(e.runId, answers.shift())));
-  await loadPlugin(kernel, join(import.meta.dir, "..", "..", "..", "src", "plugins", "stdlib"));
-  for (const pkg of ["fs", "model", "ui", "agent"]) await loadPlugin(kernel, join(import.meta.dir, "..", pkg));
 });
 
 beforeEach(async () => {
-  process.env.MODEL = `${faux.provider.id}/${faux.getModel().id}`;
   workspace = await mkdtemp(join(tmpdir(), "agent-"));
-  process.env.WORKSPACE_DIR = workspace;
-  events = [];
   requests = [];
   answers = [];
+  ({ kernel, events } = await boot());
 });
+
+/**
+ * 与入口相同的装配：fs 的工作区是 workspace，model 用 faux 模型。
+ * 每开一个 park，人从 answers 里取一个回答；没有了就不答，park 一直等着
+ */
+async function boot(journalDir?: string) {
+  const k = new Kernel({ journalDir });
+  const log: HarnessEvent[] = [];
+  k.events.subscribe((e) => log.push(e));
+  k.events.subscribe((e) => {
+    if (e.type === "park.opened" && answers.length > 0) queueMicrotask(() => k.unpark(e.runId, answers.shift()));
+  });
+  const config: Record<string, unknown> = {
+    fs: { workspace },
+    model: { model: `${faux.provider.id}/${faux.getModel().id}` },
+  };
+  await loadPlugin(k, join(import.meta.dir, "..", "..", "..", "src", "plugins", "stdlib"));
+  for (const pkg of ["fs", "model", "ui", "agent"]) await loadPlugin(k, join(import.meta.dir, "..", pkg), config[pkg]);
+  const roots = await k.boot();
+  return { kernel: k, events: log, roots };
+}
 
 /** 剧本的一步：记下这次请求，再给出预设的回复 */
 const step =
@@ -162,15 +176,7 @@ describe("agent_assist", () => {
 });
 
 describe("崩溃恢复", () => {
-  /** 一个带写前日志的内核，装上与入口相同的插件 */
-  async function boot(journalDir: string) {
-    const k = new Kernel({ journalDir });
-    const opened: string[] = [];
-    k.events.subscribe((e) => e.type === "park.opened" && opened.push(e.runId));
-    await loadPlugin(k, join(import.meta.dir, "..", "..", "..", "src", "plugins", "stdlib"));
-    for (const pkg of ["fs", "model", "ui", "agent"]) await loadPlugin(k, join(import.meta.dir, "..", pkg));
-    return { k, opened };
-  }
+  const opened = (log: HarnessEvent[]) => log.filter((e) => e.type === "park.opened").map((e) => e.runId);
 
   test("问人时进程没了：恢复后不重复调模型，问题用原 id 重新开出，回答后接着跑完", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agent-journal-"));
@@ -179,20 +185,20 @@ describe("崩溃恢复", () => {
       step(fauxText("好的，用 txt")),
     ]);
     const one = await boot(dir);
-    const root = one.k.start("agent_assist", { prompt: "写个笔记" });
+    const root = one.kernel.start("agent_assist", { prompt: "写个笔记" });
     await Bun.sleep(5);
-    expect(one.opened).toHaveLength(1);
+    expect(opened(one.events)).toHaveLength(1);
 
-    // 「崩溃」：把此刻的日志拷一份，新内核从拷贝恢复
+    // 「崩溃」：把此刻的日志拷一份，新内核启动时从拷贝恢复
     const copy = `${dir}-crash`;
     cpSync(dir, copy, { recursive: true });
     const two = await boot(copy);
-    expect(two.k.recover()).toEqual([root]);
+    expect(two.roots).toEqual([root]);
     await Bun.sleep(5);
-    expect(two.opened).toEqual(one.opened);
+    expect(opened(two.events)).toEqual(opened(one.events));
 
-    two.k.unpark(two.opened[0]!, { option: "txt" });
-    expect(await two.k.reap(root)).toEqual({ ok: true, value: { answer: "好的，用 txt" } });
+    two.kernel.unpark(opened(two.events)[0]!, { option: "txt" });
+    expect(await two.kernel.reap(root)).toEqual({ ok: true, value: { answer: "好的，用 txt" } });
     // 第一轮的模型调用从日志回放，没有再发请求：两次请求分别来自崩溃前与恢复后
     expect(requests).toHaveLength(2);
     expect(toolResultsIn(1)).toEqual([{ name: "ui_ask", isError: false, text: '{"option":"txt"}' }]);

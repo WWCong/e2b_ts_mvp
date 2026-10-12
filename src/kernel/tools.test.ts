@@ -3,7 +3,7 @@ import { z } from "zod";
 import { Kernel } from "./kernel";
 import type { ToolSpec } from "./run";
 
-function setup() {
+async function setup() {
   const kernel = new Kernel();
   const noop = async () => null;
   kernel.register({ name: "fs_write", usage: "写文件", public: true, input: z.object({ path: z.string() }), impl: noop });
@@ -16,12 +16,13 @@ function setup() {
   });
   kernel.register({ name: "fs_secret", input: z.null(), impl: noop });
   kernel.register({ name: "web_search", usage: "搜索", public: true, input: z.object({ q: z.string() }), impl: noop });
+  await kernel.boot();
   return kernel;
 }
 
 describe("ctx.tools()", () => {
   test("列出能力面里的公开 Operation，按名字排序；入参 schema 按调用方要填的形状生成", async () => {
-    const kernel = setup();
+    const kernel = await setup();
     let tools: ToolSpec[] = [];
     kernel.register({
       name: "demo_agent",
@@ -47,7 +48,7 @@ describe("ctx.tools()", () => {
   });
 
   test("装饰器的 ctx 没有 tools()：类型上就不给", async () => {
-    const kernel = setup();
+    const kernel = await setup();
     let hasTools: boolean | undefined;
     kernel.registerDecorator({
       id: "demo_peek",

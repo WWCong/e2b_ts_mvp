@@ -4,11 +4,12 @@ import type { HarnessEvent } from "./events";
 import { Kernel, type KernelConfig } from "./kernel";
 import type { Result, Run } from "./run";
 
-function setup(config: KernelConfig = {}) {
+async function setup(config: KernelConfig = {}) {
   const kernel = new Kernel(config);
   const events: HarnessEvent[] = [];
   kernel.events.subscribe((e) => events.push(e));
   kernel.register({ name: "math_double", input: z.number(), impl: async (_ctx, n: number) => n * 2 });
+  await kernel.boot();
   const run = (name: string, input: unknown) => kernel.reap(kernel.start(name, input));
   const started = () => events.filter((e) => e.type === "run.started");
   return { kernel, events, run, started };
@@ -16,7 +17,7 @@ function setup(config: KernelConfig = {}) {
 
 describe("子调用", () => {
   test("子 Run 记下父与深度；父在等子时处于 waiting，子返回后回到 running", async () => {
-    const { kernel, events, run } = setup();
+    const { kernel, events, run } = await setup();
     let parentRun: Run | undefined;
     const seen: string[] = [];
     kernel.registerDecorator({
@@ -61,7 +62,7 @@ describe("子调用", () => {
   });
 
   test("装饰器里的 call 记在被装饰的 Run 名下", async () => {
-    const { kernel, run, started } = setup();
+    const { kernel, run, started } = await setup();
     kernel.registerDecorator({
       id: "pre",
       onError: "closed",
@@ -78,7 +79,7 @@ describe("子调用", () => {
   });
 
   test("目标不存在：以内核的拒绝返回，不建子 Run，发 call.rejected", async () => {
-    const { kernel, events, run, started } = setup();
+    const { kernel, events, run, started } = await setup();
     kernel.register({ name: "demo_parent", input: z.null(), impl: (ctx) => ctx.call("nope_nope", 1) });
 
     const rejected = { ok: false, by: "kernel", reason: "unknown operation: nope_nope", retryable: false };
@@ -90,7 +91,7 @@ describe("子调用", () => {
   });
 
   test("入参不符合 schema：以内核的拒绝返回，retryable 为 true", async () => {
-    const { kernel, run, started } = setup();
+    const { kernel, run, started } = await setup();
     kernel.register({ name: "demo_parent", input: z.null(), impl: (ctx) => ctx.call("math_double", "two") });
 
     expect(await run("demo_parent", null)).toMatchObject({
@@ -101,7 +102,7 @@ describe("子调用", () => {
   });
 
   test("深度保险丝：超过最大深度的调用以拒绝返回", async () => {
-    const { kernel, events, run, started } = setup({ kernel: { maxDepth: 3 } });
+    const { kernel, events, run, started } = await setup({ kernel: { maxDepth: 3 } });
     kernel.register({ name: "demo_recurse", input: z.null(), impl: (ctx) => ctx.call("demo_recurse", null) });
 
     await run("demo_recurse", null);
@@ -112,7 +113,7 @@ describe("子调用", () => {
   });
 
   test("存活 Run 数保险丝：超出的调用以拒绝返回", async () => {
-    const { kernel, run } = setup({ kernel: { maxLiveRuns: 2 } });
+    const { kernel, run } = await setup({ kernel: { maxLiveRuns: 2 } });
     kernel.register({
       name: "demo_fanout",
       input: z.null(),
@@ -127,7 +128,7 @@ describe("子调用", () => {
   });
 
   test("实现没等子调用就返回：等子 Run 返回后父才退出", async () => {
-    const { kernel, events, run } = setup();
+    const { kernel, events, run } = await setup();
     kernel.register({
       name: "demo_forget",
       input: z.null(),
@@ -146,7 +147,7 @@ describe("子调用", () => {
   });
 
   test("发起方已退出后再用它的 ctx 调用：以拒绝返回", async () => {
-    const { kernel, run } = setup();
+    const { kernel, run } = await setup();
     let late: Promise<Result> | undefined;
     kernel.register({
       name: "demo_leak",

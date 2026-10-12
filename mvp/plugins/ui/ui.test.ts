@@ -19,6 +19,7 @@ async function setup() {
     decorators: ["ui_approval"],
     impl: async (_ctx, input: { path: string }) => deleted.push(input.path),
   });
+  await kernel.boot();
   const lastPark = () => events.filter((e) => e.type === "park.opened").at(-1)!;
   /** 起一个 Run，等它开出 park 后送去 answer，返回收割结果 */
   const answer = (name: string, input: unknown, value: unknown) => {

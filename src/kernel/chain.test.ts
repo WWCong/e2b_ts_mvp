@@ -5,7 +5,7 @@ import type { HarnessEvent } from "./events";
 import { Kernel } from "./kernel";
 
 /** echo_say 把收到的入参原样返回，并记下被调用的次数 */
-function setup(defaultDecorators: string[], decorators: Record<string, Decorator | [Decorator, OnError]>) {
+async function setup(defaultDecorators: string[], decorators: Record<string, Decorator | [Decorator, OnError]>) {
   const kernel = new Kernel({ defaultDecorators });
   const events: HarnessEvent[] = [];
   kernel.events.subscribe((e) => events.push(e));
@@ -24,6 +24,7 @@ function setup(defaultDecorators: string[], decorators: Record<string, Decorator
       return input;
     },
   });
+  await kernel.boot();
   const call = (input: unknown) => kernel.reap(kernel.start("echo_say", input));
   const decoratorEvents = () => events.filter((e) => e.type.startsWith("decorator."));
   return { call, events, decoratorEvents, echo };
@@ -40,7 +41,7 @@ describe("装饰器链", () => {
         log.push(`<${id}`);
         return r;
       };
-    const { call, events } = setup(["d1"], { d1: tracing("d1"), a: tracing("a"), b: tracing("b") });
+    const { call, events } = await setup(["d1"], { d1: tracing("d1"), a: tracing("a"), b: tracing("b") });
 
     expect(await call("x")).toEqual({ ok: true, value: "x" });
     expect(log).toEqual(["d1>", "a>", "b>", "<b", "<a", "<d1"]);
@@ -48,7 +49,7 @@ describe("装饰器链", () => {
   });
 
   test("放行不发事件；改写入参与结果各发一条事件", async () => {
-    const { call, decoratorEvents } = setup([], {
+    const { call, decoratorEvents } = await setup([], {
       pass: (_ctx, _run, next) => next(),
       upper: async (_ctx, run, next) => {
         run.input = String(run.input).toUpperCase();
@@ -66,7 +67,7 @@ describe("装饰器链", () => {
 
   test("拒绝：不调 next 直接返回拒绝结果，实现不执行", async () => {
     const denied = { ok: false as const, by: "guard", reason: "no", retryable: true };
-    const { call, decoratorEvents, echo } = setup(["guard"], { guard: async () => denied });
+    const { call, decoratorEvents, echo } = await setup(["guard"], { guard: async () => denied });
 
     expect(await call("x")).toEqual(denied);
     expect(echo.calls).toBe(0);
@@ -74,7 +75,7 @@ describe("装饰器链", () => {
   });
 
   test("配置冻结：next 之后改入参会出错", async () => {
-    const { call, decoratorEvents } = setup([], {
+    const { call, decoratorEvents } = await setup([], {
       late: async (_ctx, run, next) => {
         const r = await next();
         run.input = "changed";
@@ -87,7 +88,7 @@ describe("装饰器链", () => {
   });
 
   test("onError open：出错跳过这一环，并撤销它对入参的改写", async () => {
-    const { call, decoratorEvents } = setup([], {
+    const { call, decoratorEvents } = await setup([], {
       flaky: [
         async (_ctx, run) => {
           run.input = "half-done";
@@ -102,7 +103,7 @@ describe("装饰器链", () => {
   });
 
   test("onError closed：出错中断 Run，以该装饰器的拒绝结果退出", async () => {
-    const { call, echo } = setup(["strict"], {
+    const { call, echo } = await setup(["strict"], {
       strict: async () => {
         throw new Error("oops");
       },
@@ -113,7 +114,7 @@ describe("装饰器链", () => {
   });
 
   test("next 只能调一次", async () => {
-    const { call, echo } = setup([], {
+    const { call, echo } = await setup([], {
       twice: async (_ctx, _run, next) => {
         await next();
         return next();
@@ -124,9 +125,10 @@ describe("装饰器链", () => {
     expect(echo.calls).toBe(1);
   });
 
-  test("引用未注册的装饰器：start 直接报错", () => {
+  test("引用未注册的装饰器：start 直接报错", async () => {
     const kernel = new Kernel({ defaultDecorators: ["ghost"] });
     kernel.register({ name: "echo_say", input: z.any(), impl: async (_ctx, x) => x });
+    await kernel.boot();
     expect(() => kernel.start("echo_say", {})).toThrow("unknown decorator: ghost");
   });
 });

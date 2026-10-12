@@ -15,6 +15,7 @@ test("stdlib_park：挂起调用方的子 Run，unpark 送来的值作为结果�
     input: z.null(),
     impl: (ctx) => Promise.all([0, 1].map(() => ctx.call("stdlib_park", { schema, payload: null }))),
   });
+  await kernel.boot();
   const root = kernel.start("demo_ask", null);
 
   kernel.unpark(opened[0]!, "yes");
@@ -31,6 +32,7 @@ test("stdlib_park：挂起调用方的子 Run，unpark 送来的值作为结果�
 test("stdlib_now：返回当前时间（毫秒）", async () => {
   const kernel = new Kernel();
   await loadPlugin(kernel, import.meta.dir);
+  await kernel.boot();
   const before = Date.now();
 
   const result = await kernel.reap(kernel.start("stdlib_now", null));

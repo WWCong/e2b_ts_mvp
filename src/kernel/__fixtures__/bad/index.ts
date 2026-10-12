@@ -1,3 +1,3 @@
-/** 测试用插件：导出了 op() / decorator() 以外的东西 */
+/** 测试用插件：默认导出不是 plugin() */
 
-export const version = 1;
+export default { version: 1 };

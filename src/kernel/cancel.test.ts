@@ -8,7 +8,7 @@ import type { Rejected } from "./run";
 const cancelled: Rejected = { ok: false, by: "kernel", reason: "cancelled", retryable: false };
 
 /** demo_parent 调 demo_child；demo_child 卡在 gate 上，直到测试放行 */
-function setup() {
+async function setup() {
   const kernel = new Kernel();
   const events: HarnessEvent[] = [];
   kernel.events.subscribe((e) => events.push(e));
@@ -22,6 +22,7 @@ function setup() {
       return "late";
     },
   });
+  await kernel.boot();
   const idOf = (operation: string) => {
     const started = events.find((e) => e.type === "run.started" && e.operation === operation);
     if (!started) throw new Error(`${operation} has not started`);
@@ -32,7 +33,7 @@ function setup() {
 
 describe("取消", () => {
   test("取消根 Run：连同子孙转 killed，收割得到内核的拒绝，不再有 run.exited", async () => {
-    const { kernel, events, idOf } = setup();
+    const { kernel, events, idOf } = await setup();
     const root = kernel.start("demo_parent", null);
 
     expect(kernel.cancel(root)).toBe(true);
@@ -47,7 +48,7 @@ describe("取消", () => {
   });
 
   test("取消子 Run：父拿到内核的拒绝，照常往下执行", async () => {
-    const { kernel, idOf } = setup();
+    const { kernel, idOf } = await setup();
     const root = kernel.start("demo_parent", null);
 
     kernel.cancel(idOf("demo_child"));
@@ -55,7 +56,7 @@ describe("取消", () => {
   });
 
   test("ctx.signal：取消时 abort，子孙的也一样；传给支持它的 API 就能当场中止 IO", async () => {
-    const { kernel } = setup();
+    const { kernel } = await setup();
     let aborted: unknown;
     kernel.register({ name: "demo_outer", input: z.null(), impl: (ctx) => ctx.call("demo_sleep", null) });
     kernel.register({
@@ -78,7 +79,7 @@ describe("取消", () => {
   });
 
   test("不理会 ctx.signal 的实现会跑完，但结果作废；之后它发起的调用以拒绝返回", async () => {
-    const { kernel, events, gate } = setup();
+    const { kernel, events, gate } = await setup();
     let late: unknown;
     kernel.register({
       name: "demo_stubborn",
@@ -100,7 +101,7 @@ describe("取消", () => {
   });
 
   test("装饰器还没走到实现时被取消：实现不再开始", async () => {
-    const { kernel, gate } = setup();
+    const { kernel, gate } = await setup();
     let calls = 0;
     kernel.registerDecorator({
       id: "demo_hold",
@@ -129,7 +130,7 @@ describe("取消", () => {
   });
 
   test("取消已结束或不存在的 Run：返回 false", async () => {
-    const { kernel, gate } = setup();
+    const { kernel, gate } = await setup();
     gate.resolve();
     const root = kernel.start("demo_parent", null);
     await kernel.reap(root);
@@ -141,7 +142,7 @@ describe("取消", () => {
 
 describe("关停", () => {
   test("优雅关停：不再接受新的外部调用；正在执行的跑完，树里新发起的调用停在边界上不执行，随后按 shutdown 杀掉", async () => {
-    const { kernel, events, gate } = setup();
+    const { kernel, events, gate } = await setup();
     kernel.register({
       name: "demo_later",
       input: z.null(),
@@ -162,7 +163,7 @@ describe("关停", () => {
   });
 
   test("到超时仍有正在执行的：按 killed 处理，原因是 shutdown", async () => {
-    const { kernel, events } = setup();
+    const { kernel, events } = await setup();
     const root = kernel.start("demo_parent", null);
 
     await kernel.stop(5);
@@ -174,7 +175,7 @@ describe("关停", () => {
   });
 
   test("stop(0) 强杀：什么也不等，立即按 shutdown 杀掉", async () => {
-    const { kernel, events, gate } = setup();
+    const { kernel, events, gate } = await setup();
     const root = kernel.start("demo_parent", null);
 
     await kernel.stop(0);

@@ -18,18 +18,19 @@ describe("inSurface", () => {
 });
 
 describe("能力面检查", () => {
-  function setup() {
+  async function setup() {
     const kernel = new Kernel();
     const events: HarnessEvent[] = [];
     kernel.events.subscribe((e) => events.push(e));
     kernel.register({ name: "fs_read", input: z.null(), impl: async () => "content" });
     kernel.register({ name: "web_search", input: z.null(), impl: async () => "results" });
+    await kernel.boot();
     const run = (name: string) => kernel.reap(kernel.start(name, null));
     return { kernel, events, run };
   }
 
   test("目标不在发起方的能力面里：以内核的拒绝返回，不建子 Run，发 call.rejected", async () => {
-    const { kernel, events, run } = setup();
+    const { kernel, events, run } = await setup();
     kernel.register({
       name: "demo_reader",
       input: z.null(),
@@ -44,7 +45,7 @@ describe("能力面检查", () => {
   });
 
   test("不继承：子 Run 的能力面只看它自己的声明", async () => {
-    const { kernel, run } = setup();
+    const { kernel, run } = await setup();
     kernel.register({ name: "demo_outer", input: z.null(), only: ["demo_inner"], impl: (ctx) => ctx.call("demo_inner", null) });
     kernel.register({ name: "demo_inner", input: z.null(), impl: (ctx) => ctx.call("web_search", null) });
 
@@ -53,7 +54,7 @@ describe("能力面检查", () => {
   });
 
   test("装饰器发起的调用不查被装饰 Run 的能力面", async () => {
-    const { kernel, run } = setup();
+    const { kernel, run } = await setup();
     let seen: unknown;
     kernel.registerDecorator({
       id: "demo_peek",

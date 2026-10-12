@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { checkName, checkPackageName } from "./names";
 
 describe("命名规则", () => {
-  test("Operation 名是「包名_导出名」：包名小写字母、数字与 -，导出名字母与数字，最长 64", () => {
+  test("名字是「包名_键名」：包名小写字母、数字与 -，键名字母与数字，最长 64", () => {
     for (const name of ["fs_read", "video-analysis_completionScore", "a1_b2"]) {
       expect(() => checkName(name)).not.toThrow();
     }

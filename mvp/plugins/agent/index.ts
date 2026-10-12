@@ -7,7 +7,7 @@
 
 import type { AssistantMessage, Message, ToolCall } from "@earendil-works/pi-ai";
 import { z } from "zod";
-import { op } from "../../../src/kernel/harness";
+import { op, plugin } from "../../../src/kernel/harness";
 import type { Ctx, Result } from "../../../src/kernel/run";
 
 const PERSONA =
@@ -17,7 +17,7 @@ const MAX_TURNS = 20;
 /** model_complete 的出参 */
 type Reply = { message: AssistantMessage; calls: ToolCall[]; answer: string | null };
 
-export const assist = op({
+const assist = op({
   input: z.object({ prompt: z.string() }),
   only: ["fs", "model", "ui", "stdlib_now"],
   impl: async (ctx, input) => {
@@ -38,6 +38,8 @@ export const assist = op({
     throw new Error(`no answer after ${MAX_TURNS} turns`);
   },
 });
+
+export default plugin(() => ({ operations: { assist } }));
 
 /** 消息的时间戳经 stdlib_now 取：恢复重放时回送当初的值，交给模型的历史与原来一致，调用才比对得上 */
 async function now(ctx: Ctx): Promise<number> {

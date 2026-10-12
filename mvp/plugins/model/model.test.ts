@@ -20,12 +20,12 @@ let run: (input: unknown) => ReturnType<Kernel["reap"]>;
 beforeAll(async () => {
   models.setProvider(faux.provider);
   const kernel = new Kernel();
-  await loadPlugin(kernel, import.meta.dir);
+  await loadPlugin(kernel, import.meta.dir, { model: `${faux.provider.id}/${faux.getModel().id}` });
+  await kernel.boot();
   run = (input) => kernel.reap(kernel.start("model_complete", input));
 });
 
 beforeEach(() => {
-  process.env.MODEL = `${faux.provider.id}/${faux.getModel().id}`;
   sent = undefined;
 });
 
@@ -94,9 +94,7 @@ describe("model_complete", () => {
     });
   });
 
-  test("MODEL 指向不存在的模型：以拒绝返回", async () => {
-    process.env.MODEL = "nope/x";
-
-    expect(await run({ messages: [] })).toMatchObject({ ok: false, reason: "unknown model: nope/x" });
+  test("配置的模型不存在：装载失败", async () => {
+    await expect(loadPlugin(new Kernel(), import.meta.dir, { model: "nope/x" })).rejects.toThrow("unknown model: nope/x");
   });
 });

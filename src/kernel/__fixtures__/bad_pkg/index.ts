@@ -1,3 +1,5 @@
 /** 测试用插件：目录名（即包名）带 _，不合命名规则 */
 
-export {};
+import { plugin } from "../../harness";
+
+export default plugin(() => ({}));

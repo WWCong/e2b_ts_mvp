@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +11,6 @@ let workspace: string;
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "fs-plugin-"));
-  process.env.WORKSPACE_DIR = workspace;
 });
 
 /** fs_write 要审批：装上 ui 与 stdlib，审批一律答 yes */
@@ -20,12 +20,22 @@ async function setup() {
   kernel.events.subscribe((e) => events.push(e));
   kernel.events.subscribe((e) => e.type === "park.opened" && queueMicrotask(() => kernel.unpark(e.runId, { option: "yes" })));
   await loadPlugin(kernel, join(import.meta.dir, "..", "..", "..", "src", "plugins", "stdlib"));
-  for (const pkg of ["fs", "ui"]) await loadPlugin(kernel, join(import.meta.dir, "..", pkg));
+  await loadPlugin(kernel, import.meta.dir, { workspace });
+  await loadPlugin(kernel, join(import.meta.dir, "..", "ui"));
+  await kernel.boot();
   const run = (name: string, input: unknown) => kernel.reap(kernel.start(name, input));
   return { events, run };
 }
 
 describe("fs 插件", () => {
+  test("启动时建好工作区", async () => {
+    workspace = join(workspace, "not", "yet");
+    expect(existsSync(workspace)).toBe(false);
+
+    await setup();
+    expect(existsSync(workspace)).toBe(true);
+  });
+
   test("写、读、列：写时自动建目录，列出结果按名字排序", async () => {
     const { run } = await setup();
 

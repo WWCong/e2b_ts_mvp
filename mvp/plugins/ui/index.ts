@@ -5,7 +5,7 @@
  */
 
 import { z } from "zod";
-import { decorator, op } from "../../../src/kernel/harness";
+import { decorator, op, plugin } from "../../../src/kernel/harness";
 
 /** 约定的 payload 格式 */
 export type Question = { question: string; options?: string[] };
@@ -16,7 +16,7 @@ export type Question = { question: string; options?: string[] };
  */
 export type Answer = { option?: string; text?: string };
 
-export const ask = op({
+const ask = op({
   usage:
     "向用户提一个问题并等他回答。信息不够、或有几种做法需要用户拍板时使用。" +
     "返回 { option, text }：option 是用户选的选项（给了 options 且用户选了时才有），text 是用户的补充说明或自己写的回答",
@@ -34,7 +34,7 @@ export const ask = op({
  * 选 yes 才执行；带了补充说明就连同结果一起交回，结果改为 { result, userNote }。
  * 选 no 或写了别的回答都不执行：有说明时原因里带上说明、可按说明改了再试；撤回或被短路时原因取它们的。
  */
-export const approval = decorator({
+const approval = decorator({
   onError: "closed",
   fn: async (ctx, run, next) => {
     const detail = JSON.stringify(run.input);
@@ -51,6 +51,8 @@ export const approval = decorator({
     return { ok: false, by: "ui_approval", reason, retryable: Boolean(text) };
   },
 });
+
+export default plugin(() => ({ operations: { ask }, decorators: { approval } }));
 
 /** 按约定格式组 stdlib_park 的入参：回答的 schema 由选项决定 */
 function parkInput(q: Question) {

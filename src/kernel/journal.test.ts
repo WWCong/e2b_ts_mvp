@@ -20,7 +20,7 @@ beforeEach(async () => {
 });
 
 /** demo_park 把 ctx.park 包成 Operation；demo_echo 原样返回入参；demo_both 同时开两个 park，都答完再开第三个 */
-function setup() {
+async function setup() {
   const kernel = new Kernel({ journalDir: dir });
   const events: HarnessEvent[] = [];
   kernel.events.subscribe((e) => events.push(e));
@@ -38,6 +38,7 @@ function setup() {
       return ctx.call("demo_park", ask("c"));
     },
   });
+  await kernel.boot();
   const file = (root: string) => join(dir, `${root}.jsonl`);
   const lines = (root: string): Entry[] =>
     readFileSync(file(root), "utf8")
@@ -50,7 +51,7 @@ function setup() {
 
 describe("写前日志", () => {
   test("根与外部入参；调用发起记 call（带子 Run），完成记 done；实现与装饰器的调用一起编号，内核拒绝的也记", async () => {
-    const { kernel, events, lines, parkIds } = setup();
+    const { kernel, events, lines, parkIds } = await setup();
     kernel.registerDecorator({
       id: "test_log",
       onError: "closed",
@@ -99,7 +100,7 @@ describe("写前日志", () => {
   });
 
   test("先记后做：park 的值落盘后才关 park，子 Run 的结果落盘后才交给父；树结束删日志", async () => {
-    const { kernel, events, file, lines, parkIds } = setup();
+    const { kernel, events, file, lines, parkIds } = await setup();
     kernel.register({ name: "demo_ask", input: z.null(), impl: (ctx) => ctx.call("demo_park", ask("?")) });
     const root = kernel.start("demo_ask", null);
     const park = parkIds()[0]!;
@@ -120,7 +121,7 @@ describe("写前日志", () => {
   });
 
   test("完成顺序：同一个 Run 的 done 行按完成的先后排", async () => {
-    const { kernel, lines, parkIds } = setup();
+    const { kernel, lines, parkIds } = await setup();
     const root = kernel.start("demo_both", null);
     const [a, b] = parkIds() as [string, string];
 
@@ -134,8 +135,8 @@ describe("写前日志", () => {
     ]);
   });
 
-  test("取消其中一支：父的 done 记下取消的拒绝；取消整棵树：删日志", () => {
-    const { kernel, file, lines, parkIds } = setup();
+  test("取消其中一支：父的 done 记下取消的拒绝；取消整棵树：删日志", async () => {
+    const { kernel, file, lines, parkIds } = await setup();
     const root = kernel.start("demo_both", null);
 
     kernel.cancel(parkIds()[0]!);
@@ -145,7 +146,7 @@ describe("写前日志", () => {
   });
 
   test("关停：日志保留，停在被杀之前，不记关停造成的结果", async () => {
-    const { kernel, lines } = setup();
+    const { kernel, lines } = await setup();
     const root = kernel.start("demo_both", null);
 
     await kernel.stop(5);

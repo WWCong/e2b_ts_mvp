@@ -1,12 +1,13 @@
 /**
- * 内核：注册表、Run 的创建与执行、挂起，对外的调用、收割、送值与撤回、取消、关停与恢复接口。
+ * 内核：注册表、插件与生命周期、Run 的创建与执行、挂起，对外的调用、收割、送值与撤回、取消、关停接口。
  * 内核不注册任何 Operation，注册表里的全部来自装载的插件；park 的 Operation 形式在 stdlib 插件里。
  */
 
 import { z } from "zod";
 import { runChain, type DecoratorCtx, type DecoratorDef } from "./chain";
-import { EventStream } from "./events";
-import { checkName } from "./names";
+import { EventStream, notify, type HarnessEvent } from "./events";
+import { AFTER, PLUGIN_KEYS, type PluginObject } from "./harness";
+import { checkName, checkPackageName } from "./names";
 import { reject, transition, type Ctx, type Rejected, type Result, type Run, type ToolSpec } from "./run";
 import { digest, fold, Journal, type Entry, type Recorded, type RunLog } from "./journal";
 import { isDone, Replay } from "./replay";
@@ -16,7 +17,7 @@ import { inSurface, type Surface } from "./surface";
 export type OperationImpl = (ctx: Ctx, input: any) => Promise<unknown>;
 
 /**
- * 注册表里的一项 Operation。插件用 op() 声明，装载器补上名字「包名_导出名」（harness.ts、loader.ts、names.ts）。
+ * 注册表里的一项 Operation。插件用 op() 声明，kernel.use 补上名字「包名_键名」（harness.ts、names.ts）。
  * 后续加入：limits。
  */
 export type Operation = Surface & {
@@ -77,8 +78,19 @@ type LiveRun = {
   abort: AbortController;
 };
 
+/**
+ * 生命周期：assembling 装配中（use、register）→ booting 插件 onStart 中 → running 接受调用 → stopping 关停中。
+ * 启动失败停在 booting
+ */
+type Phase = "assembling" | "booting" | "running" | "stopping";
+
 export class Kernel {
   readonly events = new EventStream();
+  private phase: Phase = "assembling";
+  /** 包名 → 插件对象，按装载顺序 */
+  private readonly plugins = new Map<string, PluginObject>();
+  /** 插件的 onStop 只跑一次：重复 stop（比如优雅关停中又强杀）共用它 */
+  private stopped?: Promise<void>;
   private readonly operations = new Map<string, Operation>();
   private readonly decorators = new Map<string, DecoratorDef>();
   /** 公开 Operation 的工具描述，注册时生成 */
@@ -88,7 +100,6 @@ export class Kernel {
   /** runId → 在途 Run */
   private readonly lives = new Map<string, LiveRun>();
   private readonly fuse: { maxDepth: number; maxLiveRuns: number };
-  private stopping = false;
   /** 关停时，没有正在执行的调用了（只剩停住的与 park）就兑现 */
   private quiet?: PromiseWithResolvers<void>;
   private readonly journal?: Journal;
@@ -98,6 +109,32 @@ export class Kernel {
   constructor(private readonly config: KernelConfig = {}) {
     this.fuse = { ...FUSE_DEFAULTS, ...config.kernel };
     if (config.journalDir) this.journal = new Journal(config.journalDir);
+  }
+
+  /**
+   * 装上一个插件实例（loader 以装配配置调完工厂后交来）：注册它的 Operation 与装饰器，名字取「包名_键名」；
+   * 挂点方法订阅事件流。只能在 boot 之前：boot 时要调它的 onStart
+   */
+  use(pkg: string, plugin: PluginObject): void {
+    if (this.phase !== "assembling") throw new Error(`cannot use ${pkg}: harness is ${this.phase}`);
+    checkPackageName(pkg);
+    if (this.plugins.has(pkg)) throw new Error(`duplicate plugin: ${pkg}`);
+    for (const key of Object.keys(plugin)) {
+      if (!PLUGIN_KEYS.has(key)) throw new Error(`${pkg}: unknown key in plugin object: ${key}`);
+    }
+    for (const [key, decl] of Object.entries(plugin.operations ?? {})) this.register({ name: `${pkg}_${key}`, ...decl });
+    for (const [key, decl] of Object.entries(plugin.decorators ?? {})) {
+      const id = `${pkg}_${key}`;
+      checkName(id);
+      this.registerDecorator({ id, ...decl });
+    }
+    this.plugins.set(pkg, plugin);
+    this.events.subscribe((event) => {
+      const hook = AFTER[event.type];
+      const fn = plugin[hook] as ((event: HarnessEvent) => unknown) | undefined;
+      if (fn) notify(`${pkg}.${hook} on event #${event.seq}`, () => fn.call(plugin, event));
+      if (plugin.afterAny) notify(`${pkg}.afterAny on event #${event.seq}`, () => plugin.afterAny!(event));
+    });
   }
 
   /** 名字须合命名规则；公开的 Operation 须写 usage；入参 schema 转不成 JSON Schema 的（如 z.date()）在这里就报错 */
@@ -121,9 +158,30 @@ export class Kernel {
     this.artifactDigest = undefined;
   }
 
+  /**
+   * 对外接口·启动：装配完后调一次。按装载顺序逐个 await 插件的 onStart，有一个抛异常就启动失败；
+   * 然后开始接受调用，从写前日志恢复没结束的树，最后通知各插件 afterStart。返回恢复的树的根 runId，供收割。
+   * 先恢复再接受外部调用：boot 之前 start 的树会被恢复时再执行一遍，所以 start 必须在 boot 之后。
+   */
+  async boot(): Promise<string[]> {
+    if (this.phase !== "assembling") throw new Error(`harness is ${this.phase}`);
+    this.phase = "booting";
+    for (const [pkg, plugin] of this.plugins) {
+      try {
+        await plugin.onStart?.();
+      } catch (err) {
+        throw new Error(`${pkg}.onStart failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+      }
+    }
+    this.phase = "running";
+    const roots = this.recover();
+    for (const [pkg, plugin] of this.plugins) if (plugin.afterStart) notify(`${pkg}.afterStart`, () => plugin.afterStart!());
+    return roots;
+  }
+
   /** 对外接口·调用：按名字起一棵 Run 树，返回根 Run 的 runId */
   start(name: string, input: unknown): string {
-    if (this.stopping) throw new Error("harness is stopping");
+    if (this.phase !== "running") throw new Error(`harness is ${this.phase}`);
     const admitted = this.admit(name, input);
     if ("ok" in admitted) throw new Error(admitted.reason);
     const { runId } = admitted.run;
@@ -133,11 +191,11 @@ export class Kernel {
   }
 
   /**
-   * 对外接口·恢复：读写前日志，重建所有没结束的树，返回它们根的 runId 供收割。装载完插件后调用。
+   * 启动时恢复：读写前日志，重建所有没结束的树，返回它们根的 runId。
    * 根与崩溃时正在执行的 Run 用原 runId 重新执行，attempt 加一。重新执行时按序号回放：
    * 已完成的调用回送记下的结果（不执行、不过链），已回答的 park 直接拿到回答，没回答的用原 id 重新开出。
    */
-  recover(): string[] {
+  private recover(): string[] {
     if (!this.journal) return [];
     return this.journal.readAll().map((entries) => {
       const { root, runs } = fold(entries);
@@ -216,10 +274,11 @@ export class Kernel {
    * - 优雅关停停在干净的边界上，重启后已完成的回放、停住的调用照常发起，没有执行到一半的
    * - 超时或强杀等同崩溃，在途的调用重启后重新执行，attempt 加一
    * 被杀的树 park 不关（不发 park.closed）：它们没被回答，重启后用原 id 接着等。
-   * 后续加入：harness.stopping 责任链（投递插件 flush、各插件清理）。
+   * 树都杀掉之后调各插件的 onStop（投递插件 flush、清理资源），按装载的逆序：后装的可能依赖先装的。
    */
   async stop(timeoutMs: number): Promise<void> {
-    this.stopping = true;
+    if (this.phase !== "running" && this.phase !== "stopping") throw new Error(`harness is ${this.phase}`);
+    this.phase = "stopping";
     if (timeoutMs > 0) {
       this.quiet = Promise.withResolvers();
       this.checkQuiet();
@@ -230,6 +289,18 @@ export class Kernel {
     }
     const roots = [...this.lives.values()].filter((live) => !live.parent);
     for (const live of roots) if (this.lives.has(live.run.runId)) this.kill(live, "shutdown");
+    this.stopped ??= this.stopPlugins();
+    await this.stopped;
+  }
+
+  private async stopPlugins(): Promise<void> {
+    for (const [pkg, plugin] of [...this.plugins].reverse()) {
+      try {
+        await plugin.onStop?.();
+      } catch (err) {
+        console.error(`[harness] ${pkg}.onStop failed`, err);
+      }
+    }
   }
 
   /**
@@ -239,7 +310,7 @@ export class Kernel {
   private callChild(caller: LiveRun, name: string, input: unknown, surface?: Surface): Promise<Result> {
     const { run } = caller;
     const alive = run.status === "running" || run.status === "waiting";
-    if (alive && this.stopping) return this.hold(caller);
+    if (alive && this.phase === "stopping") return this.hold(caller);
     const seq = caller.issued++;
     const inputDigest = digest(input);
 
@@ -487,7 +558,7 @@ export class Kernel {
     // 与 callChild 一样：不理会 ctx.signal、被杀后还在跑的代码不能再挂起
     if (run.status !== "running" && run.status !== "waiting") throw new Error(`run is ${run.status}`);
     if (live.park) throw new Error(`run ${run.runId} is already parked`);
-    if (this.stopping) return this.hold(live);
+    if (this.phase === "stopping") return this.hold(live);
     const seq = live.issued++;
 
     // 恢复重放：崩溃前已回答或撤回的，按原完成顺序拿日志里的产出，不再问。
