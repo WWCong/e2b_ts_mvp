@@ -1,6 +1,6 @@
 /**
  * fs 插件：工作区里的文件原语。工作区目录取配置 workspace（缺省 ./workspace），启动时建好。
- * 写文件要人审批（ui_approval），所以装 fs 时也要装 ui，与 stdlib 的 harness 插件。
+ * 写文件要人审批（ui_approval），所以依赖 ui。
  * 后续加入：fs_delete。
  */
 
@@ -16,6 +16,8 @@ export default plugin((config: { workspace?: string }) => {
   const inWorkspace = (path: string) => resolve(workspace, path);
 
   return {
+    requires: ["ui"],
+
     async onStart() {
       await mkdir(workspace, { recursive: true });
     },

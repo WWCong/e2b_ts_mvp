@@ -6,8 +6,9 @@
 import { z } from "zod";
 import { runChain, type DecoratorCtx, type DecoratorDef } from "./chain";
 import { EventStream, notify, type EventBody, type HarnessEvent } from "./events";
-import { AFTER, PLUGIN_KEYS, type BeforeEvent, type BeforeHook, type PluginObject } from "./plugin";
-import { checkName, checkPackageName } from "./names";
+import { AFTER, EVENT_HOOKS, PLUGIN_KEYS, type BeforeEvent, type BeforeHook, type PluginObject } from "./plugin";
+import { checkName, checkPackageName, packageOf } from "./names";
+import { topo } from "./order";
 import { calls } from "./ops";
 import { reject, transition, type Ctx, type Rejected, type Result, type Run, type ToolSpec } from "./run";
 import { digest, fold, Journal, type Recorded, type RunLog } from "./journal";
@@ -90,6 +91,10 @@ export class Kernel {
   private phase: Phase = "assembling";
   /** 包名 → 插件对象，按装载顺序 */
   private readonly plugins = new Map<string, PluginObject>();
+  /** 启动时排好：插件按依赖的先后（依赖在前，同级按装载顺序） */
+  private sorted: string[] = [];
+  /** 启动时排好：每个事件挂点上，实现了它的插件的先后 */
+  private readonly hookOrder = new Map<string, string[]>();
   /** 插件的 onStop 只跑一次：重复 stop（比如优雅关停中又强杀）共用它 */
   private stopped?: Promise<void>;
   private readonly operations = new Map<string, Operation>();
@@ -116,8 +121,8 @@ export class Kernel {
   }
 
   /**
-   * 装上一个插件实例（loader 以装配配置调完工厂后交来）：注册它的 Operation 与装饰器，名字取「包名_键名」；
-   * 挂点方法订阅事件流。只能在 boot 之前：boot 时要调它的 onStart
+   * 装上一个插件实例（loader 以装配配置调完工厂后交来）：注册它的 Operation 与装饰器，名字取「包名_键名」。
+   * 只能在 boot 之前：boot 时按依赖排好先后，再调它的 onStart、接上它的挂点
    */
   use(pkg: string, plugin: PluginObject): void {
     if (this.phase !== "assembling") throw new Error(`cannot use ${pkg}: harness is ${this.phase}`);
@@ -126,6 +131,9 @@ export class Kernel {
     for (const key of Object.keys(plugin)) {
       if (!PLUGIN_KEYS.has(key)) throw new Error(`${pkg}: unknown key in plugin object: ${key}`);
     }
+    for (const hook of Object.keys(plugin.order ?? {})) {
+      if (!EVENT_HOOKS.includes(hook)) throw new Error(`${pkg}: order only applies to event hooks, got ${hook}`);
+    }
     for (const [key, decl] of Object.entries(plugin.operations ?? {})) this.register({ name: `${pkg}_${key}`, ...decl });
     for (const [key, decl] of Object.entries(plugin.decorators ?? {})) {
       const id = `${pkg}_${key}`;
@@ -133,12 +141,6 @@ export class Kernel {
       this.registerDecorator({ id, ...decl });
     }
     this.plugins.set(pkg, plugin);
-    this.events.subscribe((event) => {
-      const hook = AFTER[event.type];
-      const fn = plugin[hook] as ((event: HarnessEvent) => unknown) | undefined;
-      if (fn) notify(`${pkg}.${hook} on event #${event.seq}`, () => fn.call(plugin, event));
-      if (plugin.afterAny) notify(`${pkg}.afterAny on event #${event.seq}`, () => plugin.afterAny!(event));
-    });
   }
 
   /** 名字须合命名规则；公开的 Operation 须写 usage；入参 schema 转不成 JSON Schema 的（如 z.date()）在这里就报错 */
@@ -163,14 +165,19 @@ export class Kernel {
   }
 
   /**
-   * 对外接口·启动：装配完后调一次。按装载顺序逐个 await 插件的 onStart，有一个抛异常就启动失败；
+   * 对外接口·启动：装配完后调一次。先排好插件的先后（缺依赖、有环、装饰器引用不对都启动失败），接上挂点；
+   * 再按依赖的先后逐个 await 插件的 onStart，有一个抛异常就启动失败；
    * 然后开始接受调用，从写前日志恢复没结束的树，最后通知各插件 afterStart。返回恢复的树的根 runId，供收割。
    * 先恢复再接受外部调用：boot 之前 start 的树会被恢复时再执行一遍，所以 start 必须在 boot 之后。
    */
   async boot(): Promise<string[]> {
     if (this.phase !== "assembling") throw new Error(`harness is ${this.phase}`);
     this.phase = "booting";
-    for (const [pkg, plugin] of this.plugins) {
+    this.arrange();
+    this.checkDecorators();
+    this.events.subscribe((event) => this.dispatch(event));
+    for (const pkg of this.sorted) {
+      const plugin = this.plugins.get(pkg)!;
       try {
         await plugin.onStart?.();
       } catch (err) {
@@ -179,8 +186,74 @@ export class Kernel {
     }
     this.phase = "running";
     const roots = this.recover();
-    for (const [pkg, plugin] of this.plugins) if (plugin.afterStart) notify(`${pkg}.afterStart`, () => plugin.afterStart!());
+    for (const pkg of this.sorted) {
+      const plugin = this.plugins.get(pkg)!;
+      if (plugin.afterStart) notify(`${pkg}.afterStart`, () => plugin.afterStart!());
+    }
     return roots;
+  }
+
+  /**
+   * 排先后。插件：按 requires 拓扑排序，同级按装载顺序。事件挂点：只排实现了它的插件，
+   * 缺省依赖（含间接的）在前；order 里 before 的排在自己之后（可以越过依赖），after 的排在自己之前
+   */
+  private arrange(): void {
+    const names = [...this.plugins.keys()];
+    const requires = (pkg: string) => this.plugins.get(pkg)!.requires ?? [];
+    for (const pkg of names) {
+      for (const dep of requires(pkg)) if (!this.plugins.has(dep)) throw new Error(`${pkg} requires ${dep}, which is not loaded`);
+    }
+    const plugins = topo(names, names.flatMap((pkg) => requires(pkg).map((dep) => [dep, pkg] as const)));
+    if ("cycle" in plugins) throw new Error(`plugins require each other: ${plugins.cycle.join(" → ")}`);
+    this.sorted = plugins.sorted;
+
+    // 依赖的传递闭包；按排好的先后算，依赖的总在前面算好
+    const deps = new Map<string, Set<string>>();
+    for (const pkg of this.sorted) deps.set(pkg, new Set(requires(pkg).flatMap((dep) => [dep, ...deps.get(dep)!])));
+    for (const hook of EVENT_HOOKS) {
+      const nodes = this.sorted.filter((pkg) => typeof (this.plugins.get(pkg) as Record<string, unknown>)[hook] === "function");
+      const edges: (readonly [string, string])[] = [];
+      for (const pkg of nodes) {
+        const { before = [], after = [] } = this.plugins.get(pkg)!.order?.[hook as keyof NonNullable<PluginObject["order"]>] ?? {};
+        for (const dep of deps.get(pkg)!) if (nodes.includes(dep) && !before.includes(dep)) edges.push([dep, pkg]);
+        for (const other of before) if (nodes.includes(other)) edges.push([pkg, other]);
+        for (const other of after) if (nodes.includes(other)) edges.push([other, pkg]);
+      }
+      const order = topo(nodes, edges);
+      if ("cycle" in order) throw new Error(`order of ${hook} has a cycle: ${order.cycle.join(" → ")}`);
+      this.hookOrder.set(hook, order.sorted);
+    }
+  }
+
+  /**
+   * 装饰器的引用：默认装饰器与各 Operation 的自选装饰器都得注册了（启动后才注册的 Operation，调用时再查）；
+   * 插件的 Operation 引用别的包的装饰器，那个包须在它的 requires 里
+   */
+  private checkDecorators(): void {
+    for (const id of this.config.defaultDecorators ?? []) {
+      if (!this.decorators.has(id)) throw new Error(`unknown default decorator: ${id}`);
+    }
+    for (const op of this.operations.values()) {
+      for (const id of op.decorators ?? []) {
+        if (!this.decorators.has(id)) throw new Error(`${op.name} uses unknown decorator: ${id}`);
+        const [owner, other] = [packageOf(op.name), packageOf(id)];
+        const plugin = this.plugins.get(owner);
+        if (plugin && other !== owner && !(plugin.requires ?? []).includes(other)) {
+          throw new Error(`${op.name} uses ${id}: add ${other} to the requires of ${owner}`);
+        }
+      }
+    }
+  }
+
+  /** 通知类挂点：按这个挂点排好的先后调，再调 afterAny；不等它们，出错只记下 */
+  private dispatch(event: HarnessEvent): void {
+    for (const hook of [AFTER[event.type], "afterAny"] as const) {
+      for (const pkg of this.hookOrder.get(hook) ?? []) {
+        const plugin = this.plugins.get(pkg)!;
+        const fn = plugin[hook] as (event: HarnessEvent) => unknown;
+        notify(`${pkg}.${hook} on event #${event.seq}`, () => fn.call(plugin, event));
+      }
+    }
   }
 
   /** 对外接口·调用：按名字起一棵 Run 树，返回根 Run 的 runId */
@@ -290,7 +363,7 @@ export class Kernel {
    * - 优雅关停停在干净的边界上，重启后已完成的回放、停住的调用照常发起，没有执行到一半的
    * - 超时或强杀等同崩溃，在途的调用重启后重新执行，attempt 加一
    * 被杀的树 park 不关（不发 park.closed）：它们没被回答，重启后用原 id 接着等。
-   * 树都杀掉之后调各插件的 onStop（投递插件 flush、清理资源），按装载的逆序：后装的可能依赖先装的。
+   * 树都杀掉之后调各插件的 onStop（投递插件 flush、清理资源），按依赖的逆序：依赖后关。
    */
   async stop(timeoutMs: number): Promise<void> {
     if (this.phase !== "running" && this.phase !== "stopping") throw new Error(`harness is ${this.phase}`);
@@ -310,7 +383,8 @@ export class Kernel {
   }
 
   private async stopPlugins(): Promise<void> {
-    for (const [pkg, plugin] of [...this.plugins].reverse()) {
+    for (const pkg of [...this.sorted].reverse()) {
+      const plugin = this.plugins.get(pkg)!;
       try {
         await plugin.onStop?.();
       } catch (err) {
@@ -320,13 +394,13 @@ export class Kernel {
   }
 
   /**
-   * 能拦的挂点：按装载顺序问各插件，第一个拦下的生效，返回拒绝结果（by 为它的包名）；都放行返回 undefined。
+   * 能拦的挂点：按这个挂点排好的先后问各插件，第一个拦下的生效，返回拒绝结果（by 为它的包名）；都放行返回 undefined。
    * 挂点抛异常或返回 Promise（不是同步的）都按拦下处理。
    */
   private before<H extends BeforeHook>(hook: H, event: BeforeEvent<H>): Rejected | undefined {
-    for (const [pkg, plugin] of this.plugins) {
-      const fn = plugin[hook] as ((event: EventBody) => unknown) | undefined;
-      if (!fn) continue;
+    for (const pkg of this.hookOrder.get(hook) ?? []) {
+      const plugin = this.plugins.get(pkg)!;
+      const fn = plugin[hook] as (event: EventBody) => unknown;
       let verdict: unknown;
       try {
         verdict = fn.call(plugin, event);

@@ -69,7 +69,7 @@ export type Veto = { veto: string; retryable?: boolean };
 
 /**
  * 能拦的挂点：方法 → 它拦的转换，即将要发出的事件。转换发生之前同步调，拿到将要发出的事件；
- * 返回 Veto 即拦下，按装载顺序问，第一个拦下的生效，后面的不再问。
+ * 返回 Veto 即拦下，按这个挂点排好的先后问（缺省依赖在前，见 order），第一个拦下的生效，后面的不再问。
  * 必须同步：转换是同步的，等不了；要做 IO 的策略用装饰器。抛异常按拦下处理（管控出错必须中断）。
  * 恢复重放时回送的结果不再过这些挂点，被拦下的结果也照常记进日志、重放时原样回送。
  */
@@ -90,15 +90,29 @@ export type BeforeHook = keyof typeof BEFORE;
 /** 方法 H 拿到的将要发出的事件（还没有 boot、seq、ts） */
 export type BeforeEvent<H extends BeforeHook> = Extract<EventBody, { type: (typeof BEFORE)[H] }>;
 
+/** 事件挂点：能拦的 before*、通知类的 after* 与 afterAny。它们的先后可以按挂点调整（PluginObject.order） */
+export const EVENT_HOOKS: readonly string[] = [...Object.keys(BEFORE), ...new Set(Object.values(AFTER)), "afterAny"];
+type EventHook = BeforeHook | AfterHook | "afterAny";
+
 /** 插件对象：都可选，没实现的挂点不调 */
 export type PluginObject = {
+  /**
+   * 依赖的插件（包名）。缺了启动失败；插件按依赖排先后（依赖在前，同级按装载顺序）：
+   * onStart 依赖先、onStop 依赖后，事件挂点缺省也是依赖先调。引用别的包的装饰器时，那个包必须在这里
+   */
+  requires?: string[];
+  /**
+   * 按事件挂点调整先后：before 里的插件在这个挂点上排在自己之后（可以把自己排到依赖前面），after 里的排在自己之前。
+   * 没装的插件忽略；排出环来启动失败。onStart、onStop 不能调：依赖必须先启动、后关停
+   */
+  order?: { [H in EventHook]?: { before?: string[]; after?: string[] } };
   operations?: Record<string, OpDecl>;
   decorators?: Record<string, DecoratorDecl>;
-  /** 启动时（kernel.boot），恢复没跑完的树之前调；按装载顺序逐个 await，抛异常则启动失败 */
+  /** 启动时（kernel.boot），恢复没跑完的树之前调；按依赖的先后逐个 await，抛异常则启动失败 */
   onStart?(): void | Promise<void>;
   /** 启动完成后调（通知）：所有插件都 onStart 过，没跑完的树已恢复 */
   afterStart?(): void | Promise<void>;
-  /** 关停时（kernel.stop），在途的树杀掉之后调；按装载的逆序逐个 await，抛异常只记下、继续关停 */
+  /** 关停时（kernel.stop），在途的树杀掉之后调；按依赖的逆序逐个 await，抛异常只记下、继续关停 */
   onStop?(): void | Promise<void>;
   /** 所有事件（通知），投递、观测类插件用 */
   afterAny?(event: HarnessEvent): void | Promise<void>;
@@ -108,6 +122,8 @@ export type PluginObject = {
 
 /** 插件对象里认得的键：挂点方法名拼错了不会被调，装载时就报出来 */
 export const PLUGIN_KEYS: ReadonlySet<string> = new Set([
+  "requires",
+  "order",
   "operations",
   "decorators",
   "onStart",

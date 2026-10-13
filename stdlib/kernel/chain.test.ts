@@ -125,10 +125,16 @@ describe("装饰器链", () => {
     expect(echo.calls).toBe(1);
   });
 
-  test("引用未注册的装饰器：start 直接报错", async () => {
-    const kernel = new Kernel({ defaultDecorators: ["ghost"] });
-    kernel.register({ name: "echo_say", input: z.any(), impl: async (_ctx, x) => x });
-    await kernel.boot();
-    expect(() => kernel.start("echo_say", {})).toThrow("unknown decorator: ghost");
+  test("引用未注册的装饰器：启动即报错；启动之后才注册的 Operation，start 时报错", async () => {
+    const early = new Kernel({ defaultDecorators: ["ghost"] });
+    await expect(early.boot()).rejects.toThrow("unknown default decorator: ghost");
+    const own = new Kernel();
+    own.register({ name: "echo_say", input: z.any(), decorators: ["ghost"], impl: async (_ctx, x) => x });
+    await expect(own.boot()).rejects.toThrow("echo_say uses unknown decorator: ghost");
+
+    const late = new Kernel();
+    await late.boot();
+    late.register({ name: "echo_say", input: z.any(), decorators: ["ghost"], impl: async (_ctx, x) => x });
+    expect(() => late.start("echo_say", {})).toThrow("unknown decorator: ghost");
   });
 });

@@ -53,7 +53,7 @@ const approval = decorator({
   },
 });
 
-export default plugin(() => ({ operations: { ask }, decorators: { approval } }));
+export default plugin(() => ({ requires: ["harness"], operations: { ask }, decorators: { approval } }));
 
 /** 按约定格式组 harness_park 的入参：回答的 schema 由选项决定 */
 function parkInput(q: Question) {

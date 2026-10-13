@@ -85,7 +85,7 @@ describe("beforeRunStart", () => {
     expect(events).toEqual([]);
   });
 
-  test("按装载顺序问，第一个拦下的生效，后面的不再问", async () => {
+  test("没有依赖时按装载顺序问，第一个拦下的生效，后面的不再问", async () => {
     const asked: string[] = [];
     const kernel = new Kernel();
     kernel.use("demo", { operations: { echo: op({ input: z.string(), impl: async (_ctx, s) => s }) } });

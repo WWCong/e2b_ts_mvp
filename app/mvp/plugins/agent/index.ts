@@ -36,7 +36,7 @@ const assist = op({
   },
 });
 
-export default plugin(() => ({ operations: { assist } }));
+export default plugin(() => ({ requires: ["model", "time"], operations: { assist } }));
 
 /** 消息的时间戳经 time_now 取：恢复重放时回送当初的值，交给模型的历史与原来一致，调用才比对得上 */
 async function now(ctx: Ctx): Promise<number> {

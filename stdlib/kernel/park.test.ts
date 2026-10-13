@@ -6,6 +6,7 @@ import type { Rejected, Run } from "./run";
 
 const YES_NO = z.toJSONSchema(z.boolean());
 const cancelled: Rejected = { ok: false, by: "kernel", reason: "cancelled", retryable: false };
+const UNATTENDED: Rejected = { ok: false, by: "test_unattended", reason: "unattended", retryable: false };
 
 /**
  * demo_park 与 harness_park 同形：把 ctx.park 包成 Operation；demo_ask 经它等一个布尔值。
@@ -16,6 +17,12 @@ async function setup(config: KernelConfig = {}) {
   const events: HarnessEvent[] = [];
   kernel.events.subscribe((e) => events.push(e));
   const runs = new Map<string, Run>();
+  // 无人值守：把 park 短路成拒绝，不再等待；配进默认装饰器才生效
+  kernel.registerDecorator({
+    id: "test_unattended",
+    onError: "closed",
+    fn: async (_ctx, run, next) => (run.operation === "demo_park" ? UNATTENDED : next()),
+  });
   kernel.registerDecorator({
     id: "test_spy",
     onError: "closed",
@@ -235,15 +242,9 @@ describe("装饰器与 park", () => {
   });
 
   test("无人值守：默认装饰器把 park 短路成拒绝，不再等待", async () => {
-    const unattended: Rejected = { ok: false, by: "test_unattended", reason: "unattended", retryable: false };
     const { kernel, opened } = await setup({ defaultDecorators: ["test_unattended"] });
-    kernel.registerDecorator({
-      id: "test_unattended",
-      onError: "closed",
-      fn: async (_ctx, run, next) => (run.operation === "demo_park" ? unattended : next()),
-    });
 
-    expect(await kernel.reap(kernel.start("demo_ask", "?"))).toEqual({ ok: true, value: unattended });
+    expect(await kernel.reap(kernel.start("demo_ask", "?"))).toEqual({ ok: true, value: UNATTENDED });
     expect(opened()).toEqual([]);
   });
 });

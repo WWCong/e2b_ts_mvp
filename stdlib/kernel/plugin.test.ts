@@ -69,7 +69,7 @@ describe("装上插件", () => {
 });
 
 describe("启动", () => {
-  test("onStart 按装载顺序逐个等完，然后恢复没跑完的树，最后通知 afterStart；返回恢复的树", async () => {
+  test("onStart 逐个等完（没有依赖时按装载顺序），然后恢复没跑完的树，最后通知 afterStart；返回恢复的树", async () => {
     const dir = await mkdtemp(join(tmpdir(), "plugin-"));
     const one = new Kernel({ journalDir: dir });
     one.use("demo", demo());
@@ -173,7 +173,7 @@ describe("通知类挂点", () => {
 });
 
 describe("关停", () => {
-  test("在途的树杀掉之后，按装载的逆序逐个等完 onStop；出错只记下；重复 stop 只跑一次", async () => {
+  test("在途的树杀掉之后，逆序逐个等完 onStop（没有依赖时按装载的逆序）；出错只记下；重复 stop 只跑一次", async () => {
     const kernel = new Kernel();
     const order: string[] = [];
     kernel.use("demo", {
@@ -202,5 +202,97 @@ describe("关停", () => {
 
   test("boot 之前不能 stop", async () => {
     await expect(new Kernel().stop(0)).rejects.toThrow("harness is assembling");
+  });
+});
+
+describe("依赖与先后", () => {
+  test("requires：插件按依赖排先后，同级按装载顺序；onStart 依赖先，onStop 依赖后", async () => {
+    const kernel = new Kernel();
+    const order: string[] = [];
+    const track = (pkg: string, requires?: string[]): PluginObject => ({
+      requires,
+      onStart: () => void order.push(`start ${pkg}`),
+      onStop: () => void order.push(`stop ${pkg}`),
+    });
+    kernel.use("app", track("app", ["db"]));
+    kernel.use("log", track("log"));
+    kernel.use("db", track("db", ["cache"]));
+    kernel.use("cache", track("cache"));
+    await kernel.boot();
+    await kernel.stop(0);
+
+    expect(order).toEqual([
+      ...["log", "cache", "db", "app"].map((pkg) => `start ${pkg}`),
+      ...["app", "db", "cache", "log"].map((pkg) => `stop ${pkg}`),
+    ]);
+  });
+
+  test("缺了依赖、依赖成环：启动失败", async () => {
+    const missing = new Kernel();
+    missing.use("app", { requires: ["db"] });
+    await expect(missing.boot()).rejects.toThrow("app requires db, which is not loaded");
+
+    const cycle = new Kernel();
+    cycle.use("a", { requires: ["b"] });
+    cycle.use("b", { requires: ["a"] });
+    await expect(cycle.boot()).rejects.toThrow("plugins require each other: b → a → b");
+  });
+
+  test("事件挂点缺省依赖先调；order 只在写了的挂点上把自己排到依赖前面，没装的插件忽略", async () => {
+    const kernel = new Kernel();
+    const calls: string[] = [];
+    kernel.use("demo", demo());
+    kernel.use("policy", {
+      requires: ["audit"],
+      order: { beforeRunStart: { before: ["audit", "absent"] } },
+      beforeRunStart: (e) => (calls.push(`policy before ${e.operation}`), e.operation === "demo_gate" ? { veto: "no" } : undefined),
+      afterRunExit: () => void calls.push("policy after"),
+    });
+    kernel.use("audit", {
+      beforeRunStart: () => void calls.push("audit before"),
+      afterRunExit: () => void calls.push("audit after"),
+    });
+    await kernel.boot();
+
+    const gate = kernel.start("demo_wait", null);
+    kernel.unpark(gate, true);
+    await kernel.reap(gate);
+    expect(calls).toEqual(["policy before demo_wait", "audit before", "audit after", "policy after"]);
+
+    // 第一个拦下的生效：排在前面的 policy 拦下了，audit 不再被问
+    calls.length = 0;
+    expect(() => kernel.start("demo_gate", null)).toThrow("rejected by policy: no");
+    expect(calls).toEqual(["policy before demo_gate"]);
+  });
+
+  test("order 写了非事件挂点、排出环：装上或启动时报错", async () => {
+    const kernel = new Kernel();
+    expect(() => kernel.use("bad", { order: { onStart: {} } } as PluginObject)).toThrow(
+      "bad: order only applies to event hooks, got onStart",
+    );
+
+    const cycle = new Kernel();
+    cycle.use("a", { order: { afterRunStart: { before: ["b"] } }, afterRunStart() {} });
+    cycle.use("b", { order: { afterRunStart: { before: ["a"] } }, afterRunStart() {} });
+    await expect(cycle.boot()).rejects.toThrow("order of afterRunStart has a cycle");
+  });
+
+  test("装饰器的引用启动时就查：引用别的包的装饰器，那个包要在 requires 里", async () => {
+    const guard: PluginObject = { decorators: { check: decorator({ fn: (_ctx, _run, next) => next() }) } };
+    const app = (requires?: string[]): PluginObject => ({
+      requires,
+      operations: { run: op({ input: z.null(), decorators: ["guard_check"], impl: async () => "ok" }) },
+    });
+
+    const undeclared = new Kernel();
+    undeclared.use("guard", guard);
+    undeclared.use("app", app());
+    await expect(undeclared.boot()).rejects.toThrow("app_run uses guard_check: add guard to the requires of app");
+
+    const declared = new Kernel();
+    declared.use("guard", guard);
+    declared.use("app", app(["guard"]));
+    await declared.boot();
+    expect(await declared.reap(declared.start("app_run", null))).toEqual({ ok: true, value: "ok" });
   });
 });
