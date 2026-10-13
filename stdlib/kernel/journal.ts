@@ -1,12 +1,14 @@
 /**
  * 写前日志：一棵树一个只追加的文件（JSON Lines），放在内核专属目录，任何原语不可达（R11）。
- * 调用发起、调用完成、park 关闭，都先落盘再继续；恢复时据它重建没结束的树。
+ * 它是事件流的持久投影：内核在提交阶段把每条事件先交给 commit，日志行都由事件推出，落盘后事件才交给插件、
+ * 内核才往下走（先记后做）。插件看不到这一步，也拦不了。恢复时据它重建没结束的树（kernel.ts recover）。
  * 后续加入：长期存在的树压缩日志。
  */
 
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, truncateSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import type { Result } from "./run";
+import type { HarnessEvent } from "./events";
+import { reject, type Result } from "./run";
 
 /**
  * 日志的一行。runId 是这行所属的 Run；它发起的调用与 park 按发起顺序一起编号（seq），实现与装饰器的也一起编号。
@@ -71,16 +73,87 @@ export function digest(input: unknown): string {
   return new Bun.CryptoHasher("sha256").update(JSON.stringify(input) ?? "").digest("base64url");
 }
 
+/** 在途 Run 在日志里的位置：所在树的根（文件），父与它是父的第几步 */
+type Place = { root: string; parent?: string; step?: number };
+
 /** 日志目录：文件以根 runId 命名。同步写并 fsync：落盘之后才返回，沙箱被突然回收也不丢 */
 export class Journal {
   /** 根 runId → 打开着的文件 */
   private readonly files = new Map<string, number>();
+  /** 在途 Run → 位置。Run 结束或被杀即移除：之后它的事件（如被杀后还在跑的代码发起的调用）不再记 */
+  private readonly places = new Map<string, Place>();
 
   constructor(private readonly dir: string) {
     mkdirSync(dir, { recursive: true });
   }
 
-  append(root: string, entry: Entry): void {
+  /**
+   * 提交阶段：由事件推出日志行并落盘。
+   * - run.started：根记 root 行（外部给的原样入参与产物摘要）；子 Run 记父的 call 行（入参只存摘要）；
+   *   恢复时重新执行的（带 attempt）只记 retry 行，它的 call 行已在日志里
+   * - call.rejected：发起方的 call 行（没有子 Run）与 done 行
+   * - run.exited / run.killed：父还在就记父的 done 行（被杀的记内核的拒绝）。根结束或被取消删日志；
+   *   关停保留，重启后接着跑；别的原因（diverged、恢复时根建不起来）移到 diverged/ 留着排查
+   * - park.closed：park 行
+   * - tree.recovered：记下恢复的树的根
+   */
+  commit(event: HarnessEvent): void {
+    switch (event.type) {
+      case "tree.recovered":
+        return void this.places.set(event.runId, { root: event.runId });
+      case "run.started": {
+        const parent = event.parent === undefined ? undefined : this.places.get(event.parent);
+        if (event.parent !== undefined && !parent) return;
+        const place: Place = { root: parent?.root ?? event.runId, parent: event.parent, step: event.step };
+        this.places.set(event.runId, place);
+        const { runId, operation, input } = event;
+        if (event.attempt) return this.append(place.root, { type: "retry", runId, attempt: event.attempt });
+        if (event.parent === undefined) {
+          return this.append(runId, { type: "root", runId, operation, input, artifact: event.artifact! });
+        }
+        return this.append(place.root, {
+          type: "call",
+          runId: event.parent,
+          seq: event.step!,
+          target: operation,
+          input: digest(input),
+          child: runId,
+        });
+      }
+      case "call.rejected": {
+        const place = this.places.get(event.runId);
+        if (!place) return;
+        const { runId, step: seq } = event;
+        this.append(place.root, { type: "call", runId, seq, target: event.target, input: digest(event.input) });
+        return this.append(place.root, { type: "done", runId, seq, result: event.result });
+      }
+      case "park.closed": {
+        const place = this.places.get(event.runId);
+        if (place) this.append(place.root, { type: "park", runId: event.runId, seq: event.step, result: event.result });
+        return;
+      }
+      case "run.exited":
+      case "run.killed": {
+        const place = this.places.get(event.runId);
+        if (!place) return;
+        this.places.delete(event.runId);
+        if (place.parent === undefined) return this.end(place.root, event.type === "run.exited" ? "exited" : event.reason);
+        // 父已结束或被杀（整棵树在被杀）：不记
+        if (!this.places.has(place.parent)) return;
+        const result = event.type === "run.exited" ? event.result : reject("kernel", event.reason);
+        return this.append(place.root, { type: "done", runId: place.parent, seq: place.step!, result });
+      }
+    }
+  }
+
+  /** 树结束：正常退出或被取消删日志；关停只关文件；别的原因移到 diverged/ */
+  private end(root: string, how: string): void {
+    if (how === "exited" || how === "cancelled") this.delete(root);
+    else if (how === "shutdown") this.close(root);
+    else this.retire(root);
+  }
+
+  private append(root: string, entry: Entry): void {
     let fd = this.files.get(root);
     if (fd === undefined) {
       fd = openSync(this.path(root), "a");
@@ -106,14 +179,12 @@ export class Journal {
       });
   }
 
-  /** 树结束或被取消：关掉并删除它的日志 */
-  delete(root: string): void {
+  private delete(root: string): void {
     this.close(root);
     rmSync(this.path(root), { force: true });
   }
 
-  /** 恢复失败（比对不上、根建不起来）：日志移到 diverged/ 下留着排查，不再恢复 */
-  retire(root: string): void {
+  private retire(root: string): void {
     this.close(root);
     if (!existsSync(this.path(root))) return;
     mkdirSync(join(this.dir, "diverged"), { recursive: true });

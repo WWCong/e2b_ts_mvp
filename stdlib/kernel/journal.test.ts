@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -89,9 +89,9 @@ describe("写前日志", () => {
       },
       { type: "call", runId: root, seq: 3, target: "demo_park", input: digest(ask("删除 a.txt？")), child: parkIds()[0] },
     ]);
-    // run.started 的 callSeq 与 call 行的 seq 对得上；根 Run 没有
+    // run.started 的 step 与 call 行的 seq 对得上；根 Run 没有
     const started = events.filter((e) => e.type === "run.started");
-    expect(started.map((e) => [e.operation, e.callSeq])).toEqual([
+    expect(started.map((e) => [e.operation, e.step])).toEqual([
       ["demo_flow", undefined],
       ["demo_echo", 0],
       ["demo_echo", 1],
@@ -118,6 +118,45 @@ describe("写前日志", () => {
     });
     expect(events.at(-1)).toMatchObject({ type: "run.exited", runId: root });
     expect(existsSync(file(root))).toBe(false);
+  });
+
+  test("提交阶段：日志行都由事件推出，订阅者拿到事件时对应的行已落盘", async () => {
+    const { kernel, events } = await setup();
+    kernel.register({
+      name: "demo_mixed",
+      input: z.null(),
+      impl: async (ctx) => {
+        await ctx.call("demo_nope", null);
+        return ctx.call("demo_park", ask("?"));
+      },
+    });
+    // 目录里只有这一棵树的日志；树结束后没有
+    const last = (): Entry | undefined => {
+      const [name] = readdirSync(dir).filter((n) => n.endsWith(".jsonl"));
+      if (!name) return undefined;
+      return readFileSync(join(dir, name), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Entry).at(-1);
+    };
+    const seen: [string, Entry["type"] | undefined][] = [];
+    kernel.events.subscribe((e) => seen.push([e.type, last()?.type]));
+
+    const root = kernel.start("demo_mixed", null);
+    await Bun.sleep(1);
+    const park = events.find((e) => e.type === "park.opened")!.runId;
+    kernel.unpark(park, true);
+    await kernel.reap(root);
+    expect(seen).toEqual([
+      ["run.started", "root"],
+      ["call.rejected", "done"],
+      ["run.started", "call"],
+      ["park.opened", "call"],
+      ["park.closed", "park"],
+      ["run.exited", "done"],
+      ["run.exited", undefined],
+    ]);
+    // 推出日志行要用的字段，事件里都有
+    expect(events.find((e) => e.type === "run.started")).toMatchObject({ runId: root, artifact: expect.any(String) });
+    expect(events.find((e) => e.type === "call.rejected")).toMatchObject({ runId: root, step: 0 });
+    expect(events.find((e) => e.type === "park.closed")).toMatchObject({ runId: park, step: 0 });
   });
 
   test("完成顺序：同一个 Run 的 done 行按完成的先后排", async () => {

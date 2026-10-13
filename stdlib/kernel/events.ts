@@ -1,6 +1,7 @@
 /**
  * 事件流：内核在每个状态转换点产生事件，按序交给所有订阅者（9.1）。
  * 内核只写不读回，投递去向由订阅者（投递插件）决定（R25）。
+ * 交给订阅者之前先过提交阶段：写前日志据事件同步落盘（journal.ts），插件看不到、拦不了。
  */
 
 import type { OnError } from "./chain";
@@ -14,8 +15,9 @@ export type Replayed = { runId: string; seq: number } & Recorded;
 
 export type EventBody =
   /**
-   * chain：这个 Run 的装饰器链序，从外到内；callSeq：它是父的第几个调用，即日志 call 行的 seq（根 Run 没有）；
-   * attempt：崩溃恢复后重新执行时才有，第几次执行
+   * input：调用方给的入参，原样（实现拿到的是按 schema 解析后的）；chain：这个 Run 的装饰器链序，从外到内；
+   * step：它是父的第几步，即日志的序号（根 Run 没有）；attempt：崩溃恢复后重新执行时才有，第几次执行；
+   * artifact：根 Run 才有，装配的产物摘要
    */
   | {
       type: "run.started";
@@ -23,20 +25,21 @@ export type EventBody =
       operation: string;
       input: unknown;
       parent?: string;
-      callSeq?: number;
+      step?: number;
       depth: number;
       chain: string[];
       attempt?: number;
+      artifact?: string;
     }
   | { type: "run.exited"; runId: string; operation: string; result: Result }
   /** 被杀（自己或祖先被取消，或关停，或恢复失败）；之后这个 Run 不再有 run.exited。reason：cancelled、shutdown、diverged …，或根建不起来的原因 */
   | { type: "run.killed"; runId: string; operation: string; reason: string }
-  /** 内核在建子 Run 之前就拒绝了这次调用（目标不存在、不在能力面、超出保险丝、入参不符等）；runId 是发起方 */
-  | { type: "call.rejected"; runId: string; target: string; input: unknown; result: Rejected }
+  /** 内核在建子 Run 之前就拒绝了这次调用（目标不存在、不在能力面、超出保险丝、入参不符等）；runId 是发起方，step 是它的第几步 */
+  | { type: "call.rejected"; runId: string; step: number; target: string; input: unknown; result: Rejected }
   /** Run 经 ctx.park 开始等待；runId 即 unpark 用的 id。payload 内核不解释，由 UI 等外部按约定格式理解（3.5） */
   | { type: "park.opened"; runId: string; schema: Record<string, unknown>; payload: unknown }
-  /** 不再等待：unpark 送来了值、被撤回，或 Run 被取消；关停不算（见 Kernel.stop）。result 是 park 这次的产出 */
-  | { type: "park.closed"; runId: string; result: Result }
+  /** 不再等待：unpark 送来了值、被撤回，或 Run 被取消；关停不算（见 Kernel.stop）。step 是这个 Run 的第几步，result 是 park 这次的产出 */
+  | { type: "park.closed"; runId: string; step: number; result: Result }
   /**
    * 从写前日志恢复了一棵树，runId 是根。replayed：日志里已完成的调用与 park（带结果），重放时不再发事件，
    * 崩溃前没来得及发的 run.exited、park.closed 据此补齐；inflight：崩溃时正在执行、要重新执行的 Run（含根）；
@@ -72,12 +75,16 @@ export class EventStream {
   private seq = 0;
   private readonly subscribers: Subscriber[] = [];
 
+  /** commit：提交阶段，每条事件先同步交给它，返回了才交给订阅者；它抛异常（如写盘失败）则转换点失败 */
+  constructor(private readonly commit?: (event: HarnessEvent) => void) {}
+
   subscribe(fn: Subscriber): void {
     this.subscribers.push(fn);
   }
 
   emit(body: EventBody): void {
     const event: HarnessEvent = { ...body, boot: this.boot, seq: ++this.seq, ts: Date.now() };
+    this.commit?.(event);
     // 订阅者出错不影响 Run 与其他订阅者
     for (const fn of this.subscribers) notify(`subscriber on event #${event.seq}`, () => fn(event));
   }

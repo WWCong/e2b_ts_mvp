@@ -62,8 +62,8 @@ describe("Kernel", () => {
     expect(() => kernel.register({ name: "math_double", input: z.any(), impl: async () => 0 })).toThrow("duplicate operation");
   });
 
-  test("入参按 schema 校验：不符合时 start 报错；实现拿到解析后的值", async () => {
-    const { kernel } = await setup();
+  test("入参按 schema 校验：不符合时 start 报错；实现拿到解析后的值，run.started 带调用方给的原样入参", async () => {
+    const { kernel, events } = await setup();
     kernel.register({
       name: "demo_greet",
       input: z.object({ name: z.string(), times: z.number().default(1) }),
@@ -75,6 +75,7 @@ describe("Kernel", () => {
       ok: true,
       value: { name: "张三", times: 1 },
     });
+    expect(events.find((e) => e.type === "run.started")).toMatchObject({ input: { name: "张三", extra: true } });
   });
 
   test("订阅者出错不影响 Run 与其他订阅者", async () => {
