@@ -16,5 +16,5 @@
       "stdlib/*": ["./stdlib/*"]
     }
   },
-  "include": ["stdlib", "app"]
+  "include": ["stdlib"]
 }

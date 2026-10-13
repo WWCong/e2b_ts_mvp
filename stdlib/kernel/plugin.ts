@@ -10,11 +10,15 @@ import type { HarnessEvent } from "./events";
 import type { Operation } from "./kernel";
 import type { Ctx } from "./run";
 
-export type OpDecl = Omit<Operation, "name">;
+/** I：调用方要填的入参；O：实现返回的值。ctx.ops / ctx.call 据它们推类型（ops.ts） */
+export type OpDecl<I = any, O = any> = Omit<Operation, "name" | "input" | "impl"> & {
+  input: z.ZodType<unknown, I>;
+  impl: (ctx: Ctx, input: any) => Promise<O>;
+};
 export type DecoratorDecl = Omit<DecoratorDef, "id">;
 
-/** 声明一个 Operation；impl 的 input 类型由 input schema 推出 */
-export function op<S extends z.ZodType>(decl: {
+/** 声明一个 Operation；impl 的 input 类型由 input schema 推出，返回值的类型即调用方拿到的结果 */
+export function op<S extends z.ZodType, O>(decl: {
   input: S;
   /** 用法说明；公开的 Operation 必须写，交给模型时即工具的 description */
   usage?: string;
@@ -25,9 +29,10 @@ export function op<S extends z.ZodType>(decl: {
   /** 能力面收窄：项是 Operation 名或包名，先 only 再 exclude；都不写即全开 */
   only?: string[];
   exclude?: string[];
-  impl: (ctx: Ctx, input: z.output<S>) => Promise<unknown>;
-}): OpDecl {
-  return decl;
+  impl: (ctx: Ctx, input: z.output<S>) => Promise<O>;
+}): OpDecl<z.input<S>, O> {
+  // S 的入参类型即 z.input<S>，泛型下 TS 推不出这层关系
+  return decl as OpDecl<z.input<S>, O>;
 }
 
 /** 声明一个装饰器；onError 缺省 closed（管控类出错必须中断） */
@@ -85,9 +90,12 @@ export const PLUGIN_KEYS: ReadonlySet<string> = new Set([
   ...Object.values(AFTER),
 ]);
 
-export type PluginDecl<C> = { kind: "plugin"; factory: (config: C) => PluginObject };
+/** P：工厂返回的插件对象的具体类型，注册表据它推出各 Operation 的类型 */
+export type PluginDecl<C, P extends PluginObject = PluginObject> = { kind: "plugin"; factory: (config: C) => P };
 
 /** 声明插件：factory 以装配配置调用一次，返回插件对象 */
-export function plugin<C = Record<string, never>>(factory: (config: C) => PluginObject): PluginDecl<C> {
+export function plugin<C = Record<string, never>, P extends PluginObject = PluginObject>(
+  factory: (config: C) => P,
+): PluginDecl<C, P> {
   return { kind: "plugin", factory };
 }

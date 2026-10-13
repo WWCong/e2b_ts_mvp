@@ -5,16 +5,13 @@
  * 后续加入：多轮对话（入参带 history）、model.compact 压缩历史。
  */
 
-import type { AssistantMessage, Message, ToolCall } from "@earendil-works/pi-ai";
+import type { Message, ToolCall } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { op, plugin, type Ctx, type Result } from "stdlib";
 
 const PERSONA =
   "你是工作区助手。需要查看或修改文件时使用工具；信息不够或有几种做法需要用户拍板时，用 ui_ask 问用户。做完后用中文简要回答用户。";
 const MAX_TURNS = 20;
-
-/** model_complete 的出参 */
-type Reply = { message: AssistantMessage; calls: ToolCall[]; answer: string | null };
 
 const assist = op({
   input: z.object({ prompt: z.string() }),
@@ -24,12 +21,13 @@ const assist = op({
     const history: Message[] = [{ role: "user", content: input.prompt, timestamp: await now(ctx) }];
 
     for (let turn = 0; turn < MAX_TURNS; turn++) {
-      const r = await ctx.call("model_complete", { systemPrompt: PERSONA, messages: history, tools });
+      const r = await ctx.ops.model.complete({ systemPrompt: PERSONA, messages: history, tools });
       if (!r.ok) throw new Error(`model_complete rejected by ${r.by}: ${r.reason}`);
-      const { message, calls, answer } = r.value as Reply;
+      const { message, calls, answer } = r.value;
       history.push(message);
       if (calls.length === 0) return { answer };
 
+      // 模型挑的工具：名字是变量，按名字调
       const results = await Promise.all(calls.map((call) => ctx.call(call.name, call.arguments)));
       const timestamp = await now(ctx);
       calls.forEach((call, i) => history.push(toolResult(call, results[i]!, timestamp)));
@@ -42,9 +40,9 @@ export default plugin(() => ({ operations: { assist } }));
 
 /** 消息的时间戳经 time_now 取：恢复重放时回送当初的值，交给模型的历史与原来一致，调用才比对得上 */
 async function now(ctx: Ctx): Promise<number> {
-  const r = await ctx.call("time_now", null);
+  const r = await ctx.ops.time.now(null);
   if (!r.ok) throw new Error(`time_now rejected by ${r.by}: ${r.reason}`);
-  return r.value as number;
+  return r.value;
 }
 
 /** 调用结果写成给模型看的工具结果：成功给值，被拒给拒绝的来由 */

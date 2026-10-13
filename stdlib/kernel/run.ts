@@ -2,13 +2,16 @@
  * Run：Operation 的一次执行，由状态机管理（3.4）。
  */
 
+import type { Call, Ops } from "./ops";
+
 /** waiting：在等子 Run 或等 unpark（ctx.park）；killed：被杀（取消或关停） */
 export type RunStatus = "init" | "running" | "waiting" | "exited" | "killed";
 
 /** 拒绝结果：管控短路与执行失败都以调用结果返回，不抛异常（R16） */
 export type Rejected = { ok: false; by: string; reason: string; retryable: boolean };
 
-export type Result = { ok: true; value: unknown } | Rejected;
+/** T：成功时值的类型（调用方经 ctx.ops / ctx.call 从注册表推出） */
+export type Result<T = unknown> = { ok: true; value: T } | Rejected;
 
 /** 交给模型的一项工具：公开 Operation 的名字、说明（usage）与入参 JSON Schema */
 export type ToolSpec = { name: string; description: string; inputSchema: Record<string, unknown> };
@@ -24,8 +27,13 @@ export type Ctx = {
   runId: string;
   /** 第几次执行：平时是 1；崩溃时正在执行、恢复后重新执行的加一。大于 1 时之前的执行可能已生效一部分 */
   attempt: number;
-  /** 发起这个 Run 的子调用并等它返回；拒绝作为结果返回（5.3） */
-  call(name: string, input: unknown): Promise<Result>;
+  /**
+   * 发起这个 Run 的子调用并等它返回；拒绝作为结果返回（5.3）。
+   * 名字在注册表里时入参与结果带类型；名字是变量（如模型挑的工具）时照常调用（ops.ts）
+   */
+  call: Call;
+  /** 写死的调用：ctx.ops.fs.read(input) 即 ctx.call("fs_read", input)，包与 Operation 不在注册表里编译即报错 */
+  ops: Ops;
   /** Run 被杀（取消或关停）时 abort。传给 fetch、子进程等支持它的 API，IO 当场中止 */
   signal: AbortSignal;
   /** 这个 Run 能力面里的公开 Operation，按名字排序（逐字节稳定）。装饰器的 ctx 没有它（8.1） */
@@ -33,7 +41,7 @@ export type Ctx = {
   /**
    * 挂起这个 Run：转 waiting、发 park.opened，等外部经 unpark 送来一个符合 schema（JSON Schema）的值并返回它；
    * 被撤回时抛异常。payload 随 park.opened 交给外部，内核不解释（3.5）。
-   * 一般不直接用，而是调 park Operation（harness_park），好让装饰器看得到这次挂起。装饰器的 ctx 没有它。
+   * 一般不直接用，而是调 park Operation（ctx.ops.harness.park），好让装饰器看得到这次挂起。装饰器的 ctx 没有它。
    */
   park(req: { schema: Record<string, unknown>; payload: unknown }): Promise<unknown>;
 };

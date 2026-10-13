@@ -23,9 +23,10 @@ const ask = op({
   public: true,
   input: z.object({ question: z.string(), options: z.array(z.string()).min(1).optional() }),
   impl: async (ctx, input) => {
-    const r = await ctx.call("harness_park", parkInput(input));
+    const r = await ctx.ops.harness.park(parkInput(input));
     if (!r.ok) throw new Error(r.reason);
-    return r.value;
+    // unpark 已按回答的 schema 校验过
+    return r.value as Answer;
   },
 });
 
@@ -39,7 +40,7 @@ const approval = decorator({
   fn: async (ctx, run, next) => {
     const detail = JSON.stringify(run.input);
     const question = `允许执行 ${run.operation}？${detail.length > 300 ? `${detail.slice(0, 300)}…` : detail}`;
-    const r = await ctx.call("harness_park", parkInput({ question, options: ["yes", "no"] }));
+    const r = await ctx.ops.harness.park(parkInput({ question, options: ["yes", "no"] }));
     if (!r.ok) return { ok: false, by: "ui_approval", reason: r.reason, retryable: false };
 
     const { option, text } = r.value as Answer;

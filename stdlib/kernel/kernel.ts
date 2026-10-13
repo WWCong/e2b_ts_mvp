@@ -8,6 +8,7 @@ import { runChain, type DecoratorCtx, type DecoratorDef } from "./chain";
 import { EventStream, notify, type HarnessEvent } from "./events";
 import { AFTER, PLUGIN_KEYS, type PluginObject } from "./plugin";
 import { checkName, checkPackageName } from "./names";
+import { calls } from "./ops";
 import { reject, transition, type Ctx, type Rejected, type Result, type Run, type ToolSpec } from "./run";
 import { digest, fold, Journal, type Entry, type Recorded, type RunLog } from "./journal";
 import { isDone, Replay } from "./replay";
@@ -432,12 +433,17 @@ export class Kernel {
     const ctx: Ctx = {
       runId,
       attempt,
-      call: (name, input) => this.callChild(live, name, input, op),
+      ...calls((name, input) => this.callChild(live, name, input, op)),
       signal,
       tools: () => this.toolsIn(op),
       park: (req) => this.park(live, req),
     };
-    const decoratorCtx: DecoratorCtx = { runId, attempt, call: (name, input) => this.callChild(live, name, input), signal };
+    const decoratorCtx: DecoratorCtx = {
+      runId,
+      attempt,
+      ...calls((name, input) => this.callChild(live, name, input)),
+      signal,
+    };
 
     const settle = async () => {
       const result = await runChain(decoratorCtx, run, chain, () => this.invoke(ctx, run, op), this.events);

@@ -1,0 +1,35 @@
+/**
+ * 只做类型检查（tsc），不运行：注册表推出的类型符合预期，写错的地方编译即报错。
+ * @ts-expect-error 那一行若不再报错，tsc 反过来报错。
+ */
+
+import { plugin, type Ctx, type Result } from "stdlib";
+
+export async function check(ctx: Ctx) {
+  // 入参按 schema 检查，带默认值的字段可不填；结果带实现返回值的类型
+  const read = await ctx.ops.fs.read({ path: "a.md" });
+  if (read.ok) read.value satisfies string;
+  const list = await ctx.ops.fs.list({});
+  if (list.ok) list.value satisfies { name: string; type: string }[];
+  const now = await ctx.call("time_now", null);
+  if (now.ok) now.value satisfies number;
+
+  // 名字是变量（模型挑的工具）：照常调用，入参与结果是 unknown
+  const name: string = "fs_read";
+  const any = await ctx.call(name, { whatever: 1 });
+  if (any.ok) any.value satisfies unknown;
+
+  // @ts-expect-error 包里没有这个 Operation
+  await ctx.ops.fs.delete({ path: "a.md" });
+  // @ts-expect-error 没有这个包
+  await ctx.ops.web.search({ q: "x" });
+  // @ts-expect-error 入参字段写错
+  await ctx.ops.fs.read({ file: "a.md" });
+  // @ts-expect-error 入参字段写错（ctx.call 的名字在注册表里时同样检查）
+  await ctx.call("fs_read", { file: "a.md" });
+  // @ts-expect-error 结果类型不符
+  if (read.ok) read.value satisfies number;
+}
+
+// plugin() 记下插件对象的具体类型之后，挂点方法的参数照样按事件类型推出
+plugin(() => ({ afterRunExit: (e) => void (e.result satisfies Result) }));

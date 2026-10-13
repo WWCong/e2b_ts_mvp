@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import type { HarnessEvent } from "./events";
 import { Kernel, type KernelConfig } from "./kernel";
-import type { Result, Run } from "./run";
+import type { Ctx, Result, Run } from "./run";
 
 async function setup(config: KernelConfig = {}) {
   const kernel = new Kernel(config);
@@ -159,5 +159,43 @@ describe("子调用", () => {
 
     await run("demo_leak", null);
     expect(await late).toMatchObject({ ok: false, reason: "caller is exited" });
+  });
+});
+
+describe("ctx.ops", () => {
+  /** 测试里临时注册的包不在注册表里，类型上没有；绕过类型，只验运行时 */
+  const ops = (ctx: Ctx) => ctx.ops as unknown as Record<string, Record<string, (input: unknown) => Promise<Result>>>;
+
+  test("ctx.ops.包.键(入参) 即 ctx.call(\"包_键\", 入参)：同样建子 Run，内核照常检查", async () => {
+    const { kernel, run, started } = await setup();
+    kernel.register({
+      name: "demo_parent",
+      input: z.null(),
+      impl: async (ctx) => [await ops(ctx).math!.double!(21), await ops(ctx).math!.triple!(1)],
+    });
+
+    expect(await run("demo_parent", null)).toEqual({
+      ok: true,
+      value: [
+        { ok: true, value: 42 },
+        { ok: false, by: "kernel", reason: "unknown operation: math_triple", retryable: false },
+      ],
+    });
+    const [parent, child] = started();
+    expect(child).toMatchObject({ operation: "math_double", parent: parent!.runId });
+  });
+
+  test("不认 then：await ctx.ops 或 ctx.ops.包 不会被当成 thenable", async () => {
+    const { kernel, run } = await setup();
+    kernel.register({
+      name: "demo_parent",
+      input: z.null(),
+      impl: async (ctx) => {
+        const pkg = await ops(ctx).math;
+        return [ops(ctx).then, pkg!.then, await pkg!.double!(2)];
+      },
+    });
+
+    expect(await run("demo_parent", null)).toEqual({ ok: true, value: [undefined, undefined, { ok: true, value: 4 }] });
   });
 });

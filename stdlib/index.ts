@@ -8,5 +8,6 @@
 export { decorator, op, plugin, type PluginObject } from "./kernel/plugin";
 export { Kernel, type KernelConfig } from "./kernel/kernel";
 export { loadPlugin } from "./kernel/loader";
+export type { Packages } from "./kernel/ops";
 export type { Ctx, Rejected, Result, ToolSpec } from "./kernel/run";
 export type { HarnessEvent } from "./kernel/events";
