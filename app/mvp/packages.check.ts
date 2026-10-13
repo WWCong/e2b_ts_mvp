@@ -33,3 +33,7 @@ export async function check(ctx: Ctx) {
 
 // plugin() 记下插件对象的具体类型之后，挂点方法的参数照样按事件类型推出
 plugin(() => ({ afterRunExit: (e) => void (e.result satisfies Result) }));
+// 能拦的挂点：返回 { veto } 即拦下；必须同步，写成 async 编译即报错
+plugin(() => ({ beforeRunStart: (e) => (e.depth > 8 ? { veto: "太深了" } : undefined) }));
+// @ts-expect-error before* 挂点不能是 async
+plugin(() => ({ beforeRunStart: async () => {} }));

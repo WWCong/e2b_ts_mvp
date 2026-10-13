@@ -6,7 +6,7 @@
 
 import type { z } from "zod";
 import type { Decorator, DecoratorDef, OnError } from "./chain";
-import type { HarnessEvent } from "./events";
+import type { EventBody, HarnessEvent } from "./events";
 import type { Operation } from "./kernel";
 import type { Ctx } from "./run";
 
@@ -43,7 +43,6 @@ export function decorator(decl: { onError?: OnError; fn: Decorator }): Decorator
 /**
  * 通知类挂点：事件类型 → 接它的方法。事件发生后调，只读；不等它返回，出错只记下，不影响执行。
  * 每种事件恰好对应一个方法，加了事件类型没配方法时类型检查报错。
- * 后续加入：能拦的 before* 方法。
  */
 export const AFTER = {
   "run.started": "afterRunStart",
@@ -65,6 +64,32 @@ type EventOf<H extends AfterHook> = Extract<
   { type: { [T in keyof typeof AFTER]: (typeof AFTER)[T] extends H ? T : never }[keyof typeof AFTER] }
 >;
 
+/** 能拦的挂点返回它表示拦下：veto 是原因，进拒绝结果；by 是拦下的插件的包名 */
+export type Veto = { veto: string; retryable?: boolean };
+
+/**
+ * 能拦的挂点：方法 → 它拦的转换，即将要发出的事件。转换发生之前同步调，拿到将要发出的事件；
+ * 返回 Veto 即拦下，按装载顺序问，第一个拦下的生效，后面的不再问。
+ * 必须同步：转换是同步的，等不了；要做 IO 的策略用装饰器。抛异常按拦下处理（管控出错必须中断）。
+ * 恢复重放时回送的结果不再过这些挂点，被拦下的结果也照常记进日志、重放时原样回送。
+ */
+export const BEFORE = {
+  /** 一个 Run 将要开始（含恢复时重新执行的）。拦下：子调用以拒绝返回、不建子 Run；外部调用 start 抛异常 */
+  beforeRunStart: "run.started",
+  /** 一个 Run 将要退出。拦下：结果换成拒绝 */
+  beforeRunExit: "run.exited",
+  /** 将要开出 park。拦下：不等待，park 直接以拒绝关闭 */
+  beforeParkOpen: "park.opened",
+  /** 外部送值或撤回，将要关闭 park（取消引起的不问）。拦下：unpark / withdraw 抛异常，park 照旧等待 */
+  beforeParkClose: "park.closed",
+  /** 启动时将要恢复一棵树。拦下：这棵树不恢复，以 run.killed 结束，日志移到 diverged/ */
+  beforeTreeRecover: "tree.recovered",
+} as const satisfies Record<`before${string}`, EventBody["type"]>;
+
+export type BeforeHook = keyof typeof BEFORE;
+/** 方法 H 拿到的将要发出的事件（还没有 boot、seq、ts） */
+export type BeforeEvent<H extends BeforeHook> = Extract<EventBody, { type: (typeof BEFORE)[H] }>;
+
 /** 插件对象：都可选，没实现的挂点不调 */
 export type PluginObject = {
   operations?: Record<string, OpDecl>;
@@ -77,7 +102,9 @@ export type PluginObject = {
   onStop?(): void | Promise<void>;
   /** 所有事件（通知），投递、观测类插件用 */
   afterAny?(event: HarnessEvent): void | Promise<void>;
-} & { [H in AfterHook]?: (event: EventOf<H>) => void | Promise<void> };
+} & { [H in AfterHook]?: (event: EventOf<H>) => void | Promise<void> } & {
+  [H in BeforeHook]?: (event: BeforeEvent<H>) => Veto | void;
+};
 
 /** 插件对象里认得的键：挂点方法名拼错了不会被调，装载时就报出来 */
 export const PLUGIN_KEYS: ReadonlySet<string> = new Set([
@@ -88,6 +115,7 @@ export const PLUGIN_KEYS: ReadonlySet<string> = new Set([
   "onStop",
   "afterAny",
   ...Object.values(AFTER),
+  ...Object.keys(BEFORE),
 ]);
 
 /** P：工厂返回的插件对象的具体类型，注册表据它推出各 Operation 的类型 */

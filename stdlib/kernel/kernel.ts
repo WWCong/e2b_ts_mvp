@@ -5,8 +5,8 @@
 
 import { z } from "zod";
 import { runChain, type DecoratorCtx, type DecoratorDef } from "./chain";
-import { EventStream, notify, type HarnessEvent } from "./events";
-import { AFTER, PLUGIN_KEYS, type PluginObject } from "./plugin";
+import { EventStream, notify, type EventBody, type HarnessEvent } from "./events";
+import { AFTER, PLUGIN_KEYS, type BeforeEvent, type BeforeHook, type PluginObject } from "./plugin";
 import { checkName, checkPackageName } from "./names";
 import { calls } from "./ops";
 import { reject, transition, type Ctx, type Rejected, type Result, type Run, type ToolSpec } from "./run";
@@ -188,6 +188,8 @@ export class Kernel {
     if (this.phase !== "running") throw new Error(`harness is ${this.phase}`);
     const admitted = this.admit(name, input);
     if ("ok" in admitted) throw new Error(admitted.reason);
+    const veto = this.before("beforeRunStart", this.started(admitted));
+    if (veto) throw new Error(`rejected by ${veto.by}: ${veto.reason}`);
     const { runId } = admitted.run;
     this.exits.set(runId, this.execute(admitted));
     return runId;
@@ -203,7 +205,7 @@ export class Kernel {
     return this.journal.readAll().map((entries) => {
       const { root, runs } = fold(entries);
       const logs = [...runs];
-      this.events.emit({
+      const tree: BeforeEvent<"beforeTreeRecover"> = {
         type: "tree.recovered",
         runId: root.runId,
         replayed: logs.flatMap(([runId, log]) =>
@@ -216,11 +218,15 @@ export class Kernel {
           ),
         ],
         artifactChanged: root.artifact !== this.artifact(),
-      });
-      const admitted = this.admit(root.operation, root.input, undefined, this.resume(root.runId, runs));
+      };
+      const veto = this.before("beforeTreeRecover", tree);
+      this.events.emit(tree);
+      let admitted = veto ?? this.admit(root.operation, root.input, undefined, this.resume(root.runId, runs));
+      if (!("ok" in admitted)) admitted = this.before("beforeRunStart", this.started(admitted)) ?? admitted;
       if ("ok" in admitted) {
-        // 根都建不起来（Operation 没了、入参不再合法）：恢复失败，日志随 run.killed 移到 diverged/ 留着排查
-        this.events.emit({ type: "run.killed", runId: root.runId, operation: root.operation, reason: admitted.reason });
+        // 被拦下，或根都建不起来（Operation 没了、入参不再合法）：不恢复，日志随 run.killed 移到 diverged/ 留着排查
+        const reason = admitted.by === "kernel" ? admitted.reason : `rejected by ${admitted.by}: ${admitted.reason}`;
+        this.events.emit({ type: "run.killed", runId: root.runId, operation: root.operation, reason });
         this.exits.set(root.runId, Promise.resolve(admitted));
       } else {
         this.exits.set(root.runId, this.execute(admitted));
@@ -247,14 +253,22 @@ export class Kernel {
     if (!live?.park) throw new Error(`not parked: ${id}`);
     const parsed = live.park.schema.safeParse(value);
     if (!parsed.success) throw new Error(`invalid value for park ${id}:\n${z.prettifyError(parsed.error)}`);
-    this.closePark(live, live.park, { ok: true, value: parsed.data });
+    this.closeFromOutside(live, live.park, { ok: true, value: parsed.data });
   }
 
   /** 对外接口·撤回：等待中的 park 以拒绝结果返回，by 为挂起的那个 Operation（如 harness_park） */
   withdraw(id: string, reason: string): void {
     const live = this.lives.get(id);
     if (!live?.park) throw new Error(`not parked: ${id}`);
-    this.closePark(live, live.park, reject(live.run.operation, reason));
+    this.closeFromOutside(live, live.park, reject(live.run.operation, reason));
+  }
+
+  /** 外部送值或撤回：先问 beforeParkClose，被拦下就抛异常、park 照旧等待 */
+  private closeFromOutside(live: LiveRun, park: Park, result: Result): void {
+    const { runId } = live.run;
+    const veto = this.before("beforeParkClose", { type: "park.closed", runId, step: park.seq, result });
+    if (veto) throw new Error(`park ${runId} close rejected by ${veto.by}: ${veto.reason}`);
+    this.closePark(live, park, result);
   }
 
   /**
@@ -306,6 +320,33 @@ export class Kernel {
   }
 
   /**
+   * 能拦的挂点：按装载顺序问各插件，第一个拦下的生效，返回拒绝结果（by 为它的包名）；都放行返回 undefined。
+   * 挂点抛异常或返回 Promise（不是同步的）都按拦下处理。
+   */
+  private before<H extends BeforeHook>(hook: H, event: BeforeEvent<H>): Rejected | undefined {
+    for (const [pkg, plugin] of this.plugins) {
+      const fn = plugin[hook] as ((event: EventBody) => unknown) | undefined;
+      if (!fn) continue;
+      let verdict: unknown;
+      try {
+        verdict = fn.call(plugin, event);
+      } catch (err) {
+        console.error(`[harness] ${pkg}.${hook} failed`, err);
+        return reject(pkg, `${hook} failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (verdict instanceof Promise) {
+        verdict.catch(() => {});
+        return reject(pkg, `${hook} must be synchronous`);
+      }
+      if (verdict && typeof verdict === "object" && "veto" in verdict) {
+        const { veto, retryable } = verdict as { veto: unknown; retryable?: unknown };
+        return { ok: false, by: pkg, reason: String(veto), retryable: retryable === true };
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * ctx.call 的实现：发起 caller 的子调用并等它返回。
    * 给了 surface 就检查目标在不在里面；装饰器发起的调用不给。
    */
@@ -336,6 +377,7 @@ export class Kernel {
     if (!alive) admitted = reject("kernel", `caller is ${run.status}`);
     else if (surface && !inSurface(surface, name)) admitted = reject("kernel", `${name} is not in the surface of ${run.operation}`);
     else admitted = this.admit(name, input, run, resume);
+    if (!("ok" in admitted)) admitted = this.before("beforeRunStart", this.started(admitted, seq)) ?? admitted;
 
     // 先记后做：run.started 或 call.rejected 的提交阶段把这次调用落盘之后，子 Run 才开始执行、拒绝才交给调用方。
     // 换路的新调用记一行覆盖旧的
@@ -390,7 +432,24 @@ export class Kernel {
     return { runId, attempt, logs };
   }
 
-  private execute({ run, op, chain, raw, logs }: Admitted, parent?: LiveRun, seq?: number): Promise<Result> {
+  /** 一个 Run 开始时发的 run.started；step 是它在父里的第几步 */
+  private started({ run, chain, raw }: Admitted, step?: number): BeforeEvent<"beforeRunStart"> {
+    return {
+      type: "run.started",
+      runId: run.runId,
+      operation: run.operation,
+      input: raw,
+      parent: run.parent,
+      step,
+      depth: run.depth,
+      chain: chain.map((d) => d.id),
+      attempt: run.attempt > 1 ? run.attempt : undefined,
+      artifact: run.parent ? undefined : this.artifact(),
+    };
+  }
+
+  private execute(admitted: Admitted, parent?: LiveRun, seq?: number): Promise<Result> {
+    const { run, op, chain, logs } = admitted;
     const log = logs?.get(run.runId);
     const live: LiveRun = {
       run,
@@ -410,18 +469,7 @@ export class Kernel {
       this.refresh(parent);
     }
     transition(run, "running");
-    this.events.emit({
-      type: "run.started",
-      runId: run.runId,
-      operation: run.operation,
-      input: raw,
-      parent: run.parent,
-      step: seq,
-      depth: run.depth,
-      chain: chain.map((d) => d.id),
-      attempt: run.attempt > 1 ? run.attempt : undefined,
-      artifact: parent ? undefined : this.artifact(),
-    });
+    this.events.emit(this.started(admitted, seq));
 
     // 实现的调用查它自己的能力面；装饰器的调用同样记在这个 Run 名下，但不查它的能力面（4.1）
     const { signal } = live.abort;
@@ -453,11 +501,13 @@ export class Kernel {
       const missed = live.replay?.unreached(live.issued);
       if (missed) return void this.diverge(live, ...missed, "exit");
 
+      const exited = { type: "run.exited", runId: run.runId, operation: run.operation, result } as const;
+      const veto = this.before("beforeRunExit", exited);
       transition(run, "exited");
       this.forget(live);
       // 提交阶段：结果落盘（父的 done 行；整棵树结束则删日志）之后才交给父
-      this.events.emit({ type: "run.exited", runId: run.runId, operation: run.operation, result });
-      live.done.resolve(result);
+      this.events.emit(veto ? { ...exited, result: veto } : exited);
+      live.done.resolve(veto ?? result);
     };
     void settle();
     return live.done.promise;
@@ -555,11 +605,19 @@ export class Kernel {
       result = await live.replay!.deliver(recorded.order, recorded.result);
     } else {
       if (recorded && isDone(recorded)) throw new Error(this.diverge(live, seq, recorded, "park").reason);
-      const closed = Promise.withResolvers<Result>();
-      live.park = { seq, schema: z.fromJSONSchema(schema), closed };
-      this.refresh(live);
-      this.events.emit({ type: "park.opened", runId: run.runId, schema, payload });
-      result = await closed.promise;
+      const parsed = z.fromJSONSchema(schema);
+      const veto = this.before("beforeParkOpen", { type: "park.opened", runId: run.runId, schema, payload });
+      if (veto) {
+        // 被拦下：不开出、不等待，直接以拒绝关闭（日志照常记 park 行）
+        this.events.emit({ type: "park.closed", runId: run.runId, step: seq, result: veto });
+        result = veto;
+      } else {
+        const closed = Promise.withResolvers<Result>();
+        live.park = { seq, schema: parsed, closed };
+        this.refresh(live);
+        this.events.emit({ type: "park.opened", runId: run.runId, schema, payload });
+        result = await closed.promise;
+      }
     }
     if (!result.ok) throw new Error(result.reason);
     return result.value;
