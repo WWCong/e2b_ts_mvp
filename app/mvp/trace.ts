@@ -12,7 +12,11 @@ export function printEvent(e: HarnessEvent): void {
   switch (e.type) {
     case "run.started":
       depths.set(e.runId, e.depth);
-      return line(e.depth, `▶ ${e.operation} ${brief(e.operation, "input", e.input)}`);
+      return line(e.depth, `▶ ${e.operation} ${brief(e.operation, "input", e.input)}${e.attempt ? `（第 ${e.attempt} 次）` : ""}`);
+    case "tree.recovered": {
+      const changed = e.artifactChanged ? "；代码改过，逐步比对" : "";
+      return line(0, `↻ 接着做 ${e.runId}：${e.replayed.length} 步已完成、不再执行，${e.inflight.length} 个重新执行${changed}`);
+    }
     case "run.exited": {
       const depth = depths.get(e.runId) ?? 0;
       depths.delete(e.runId);
