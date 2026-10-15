@@ -9,6 +9,7 @@ import {
   fauxText,
   fauxToolCall,
   type AssistantMessage,
+  type Message,
   type ToolResultMessage,
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
@@ -66,7 +67,10 @@ const step =
     return fauxAssistantMessage(content, toolUse ? { stopReason: "toolUse" } : undefined);
   };
 
-const assist = (prompt: string) => kernel.reap(kernel.start("agent_assist", { prompt }));
+const assist = (prompt: string, history: Message[] = []) => kernel.reap(kernel.start("agent_assist", { prompt, history }));
+
+/** 某次请求里发给模型的对话消息（去掉系统消息） */
+const messagesIn = (i: number) => requests[i]!.messages.filter((m): m is Message => m.role !== "system");
 
 /** 某次请求里发给模型的工具结果 */
 const toolResultsIn = (i: number) =>
@@ -86,7 +90,7 @@ describe("agent_assist", () => {
       step(fauxText("已写入 summary.md")),
     ]);
 
-    expect(await assist("总结 notes.md 写到 summary.md")).toEqual({ ok: true, value: { answer: "已写入 summary.md" } });
+    expect(await assist("总结 notes.md 写到 summary.md")).toMatchObject({ ok: true, value: { answer: "已写入 summary.md" } });
     expect(await readFile(join(workspace, "summary.md"), "utf8")).toBe("三点开会");
 
     // 交给模型的工具：能力面里 fs 与 ui 的公开 Operation
@@ -119,7 +123,7 @@ describe("agent_assist", () => {
       step(fauxText("你没有批准，所以没写")),
     ]);
 
-    expect(await assist("写 a.md")).toEqual({ ok: true, value: { answer: "你没有批准，所以没写" } });
+    expect(await assist("写 a.md")).toMatchObject({ ok: true, value: { answer: "你没有批准，所以没写" } });
     expect(toolResultsIn(1)).toEqual([
       {
         name: "fs_write",
@@ -137,7 +141,7 @@ describe("agent_assist", () => {
       step(fauxText("好的，用 txt")),
     ]);
 
-    expect(await assist("写个笔记")).toEqual({ ok: true, value: { answer: "好的，用 txt" } });
+    expect(await assist("写个笔记")).toMatchObject({ ok: true, value: { answer: "好的，用 txt" } });
     expect(toolResultsIn(1)).toEqual([{ name: "ui_ask", isError: false, text: '{"option":"txt","text":"标题用日期"}' }]);
   });
 
@@ -147,7 +151,7 @@ describe("agent_assist", () => {
       step(fauxText("读不了工作区外的文件")),
     ]);
 
-    expect(await assist("读 ../secret.md")).toEqual({ ok: true, value: { answer: "读不了工作区外的文件" } });
+    expect(await assist("读 ../secret.md")).toMatchObject({ ok: true, value: { answer: "读不了工作区外的文件" } });
     expect(toolResultsIn(1)).toEqual([
       {
         name: "fs_read",
@@ -170,6 +174,62 @@ describe("agent_assist", () => {
       by: "agent_assist",
       reason: "model_complete rejected by model_complete: No more faux responses queued",
     });
+  });
+});
+
+describe("多轮对话", () => {
+  /** 一轮对话的出参 */
+  type Turn = { answer: string; history: Message[] };
+  const turn = async (prompt: string, history?: Message[]) => {
+    const r = await assist(prompt, history);
+    if (!r.ok) throw new Error(r.reason);
+    return r.value as Turn;
+  };
+
+  test("出参的 history 含这一轮的工具调用与结果；下一轮原样传回，交给模型的前缀与上一轮一致", async () => {
+    await writeFile(join(workspace, "a.md"), "第一版");
+    faux.setResponses([
+      step(fauxToolCall("fs_read", { path: "a.md" })),
+      step(fauxText("a.md 写着第一版")),
+      step(fauxText("你刚才问的是 a.md")),
+    ]);
+
+    const one = await turn("a.md 写着什么？");
+    expect(one.history.map((m) => m.role)).toEqual(["user", "assistant", "toolResult", "assistant"]);
+    const two = await turn("我刚才问的是哪个文件？", one.history);
+    expect(two.answer).toBe("你刚才问的是 a.md");
+    expect(two.history.slice(0, one.history.length)).toEqual(one.history);
+    expect(two.history.map((m) => m.role).slice(one.history.length)).toEqual(["user", "assistant"]);
+    // 第二轮的请求：上一轮的历史原样在前，后面是这一轮的提问
+    expect(messagesIn(2).slice(0, one.history.length)).toEqual(one.history);
+    expect(messagesIn(2).at(-1)).toMatchObject({ role: "user", content: "我刚才问的是哪个文件？" });
+  });
+
+  test("第二轮问人时进程没了：恢复后接着这一轮，出参的 history 前面是第一轮", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-turns-"));
+    faux.setResponses([
+      step(fauxText("你好")),
+      step(fauxToolCall("ui_ask", { question: "用哪种格式？", options: ["md", "txt"] })),
+      step(fauxText("好的，用 md")),
+    ]);
+    const one = await boot(dir);
+    const first = await one.kernel.reap(one.kernel.start("agent_assist", { prompt: "你好" }));
+    if (!first.ok) throw new Error(first.reason);
+    const history = (first.value as Turn).history;
+    const root = one.kernel.start("agent_assist", { prompt: "写个笔记", history });
+    await Bun.sleep(5);
+
+    const copy = `${dir}-crash`;
+    cpSync(dir, copy, { recursive: true });
+    const two = await boot(copy);
+    await Bun.sleep(5);
+    const park = two.events.find((e) => e.type === "park.opened")!.runId;
+    two.kernel.unpark(park, { option: "md" });
+    const second = await two.kernel.reap(root);
+    if (!second.ok) throw new Error(second.reason);
+    expect((second.value as Turn).answer).toBe("好的，用 md");
+    expect((second.value as Turn).history.slice(0, history.length)).toEqual(history);
+    expect(requests).toHaveLength(3);
   });
 });
 
@@ -196,7 +256,7 @@ describe("崩溃恢复", () => {
     expect(opened(two.events)).toEqual(opened(one.events));
 
     two.kernel.unpark(opened(two.events)[0]!, { option: "txt" });
-    expect(await two.kernel.reap(root)).toEqual({ ok: true, value: { answer: "好的，用 txt" } });
+    expect(await two.kernel.reap(root)).toMatchObject({ ok: true, value: { answer: "好的，用 txt" } });
     // 第一轮的模型调用从日志回放，没有再发请求：两次请求分别来自崩溃前与恢复后
     expect(requests).toHaveLength(2);
     expect(toolResultsIn(1)).toEqual([{ name: "ui_ask", isError: false, text: '{"option":"txt"}' }]);

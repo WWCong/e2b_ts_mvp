@@ -1,5 +1,6 @@
 /**
- * 在终端里回答 park：认得 ui 插件约定的格式（Question → Answer），一次问一个，把回答 unpark 回去。
+ * 终端输入。对话与回答 park 共用一份按行读的输入（lineReader）。
+ * 回答 park：认得 ui 插件约定的格式（Question → Answer），一次问一个，把回答 unpark 回去。
  * 方案里由 UI 渲染 agent-ui 格式的 park（3.5）；这里是入口程序的一个订阅者。
  */
 
@@ -10,9 +11,26 @@ import type { Answer, Question } from "./plugins/ui";
 const HINT_OPTIONS = "输入序号或选项选择，后面可空格接补充说明；也可以直接写别的回答。/skip [原因] 不回答";
 const HINT_TEXT = "直接写回答。/skip [原因] 不回答";
 
-export function answerParks(kernel: Kernel, rl: Interface): void {
+/** 先显示提示，再读一行；输入结束返回 undefined */
+export type ReadLine = (prompt: string) => Promise<string | undefined>;
+
+/** 按行读终端输入。排队：前一次读完才轮到下一次，对话与回答问题不会抢同一行 */
+export function lineReader(rl: Interface): ReadLine {
   // 用异步迭代器按行取：会缓存已读到的行（管道输入时 rl.question 会丢行）
   const lines = rl[Symbol.asyncIterator]();
+  let queue: Promise<unknown> = Promise.resolve();
+  return (prompt) => {
+    const read = queue.then(async () => {
+      process.stdout.write(prompt);
+      const line = await lines.next();
+      return line.done ? undefined : String(line.value);
+    });
+    queue = read.catch(() => {});
+    return read;
+  };
+}
+
+export function answerParks(kernel: Kernel, read: ReadLine): void {
   const open = new Set<string>();
   let queue = Promise.resolve();
 
@@ -25,13 +43,12 @@ export function answerParks(kernel: Kernel, rl: Interface): void {
     queue = queue.then(async () => {
       // 轮到时已不在等的（比如被取消）跳过；空行再问
       while (open.has(e.runId)) {
-        process.stdout.write(render(q));
-        const line = await lines.next();
-        if (line.done) {
+        const line = await read(render(q));
+        if (line === undefined) {
           if (open.has(e.runId)) kernel.withdraw(e.runId, "输入已结束");
           return;
         }
-        const reply = parse(q, line.value.trim());
+        const reply = parse(q, line.trim());
         if (!reply) continue;
         try {
           if ("skip" in reply) kernel.withdraw(e.runId, reply.skip);

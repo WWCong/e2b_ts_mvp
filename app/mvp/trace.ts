@@ -43,10 +43,15 @@ function line(depth: number, text: string): void {
 
 /**
  * 一行摘要。model_complete 的入参与出参太长，只取要点：几条消息几个工具，模型要调谁或回答了什么；
- * harness_park 的入参只看 payload（要问的问题），不看 schema
+ * agent_assist 只看这一句与回答，历史只给条数；harness_park 的入参只看 payload（要问的问题），不看 schema
  */
 function brief(operation: string, side: "input" | "output", value: unknown): string {
   if (operation === "harness_park" && side === "input") return short((value as { payload: unknown }).payload);
+  if (operation === "agent_assist") {
+    if (side === "output") return `→ ${short((value as { answer: unknown }).answer)}`;
+    const { prompt, history } = value as { prompt: string; history?: unknown[] };
+    return `${short(prompt)}${history?.length ? `（带 ${history.length} 条历史）` : ""}`;
+  }
   if (operation === "model_complete") {
     if (side === "input") {
       const { messages, tools } = value as { messages: unknown[]; tools: unknown[] };

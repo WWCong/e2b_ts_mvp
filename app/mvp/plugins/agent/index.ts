@@ -1,8 +1,10 @@
 /**
  * agent 插件：最小的 agent 循环（3.3）。调模型 → 模型要调工具就逐个 ctx.call → 结果追加进历史 → 再调模型，
  * 直到模型不再调工具。被拒绝的调用原样作为出错的工具结果交给模型，由它改道或重试。
+ * 多轮对话：入参带之前的 history，出参是回答与更新后的 history（含这一轮的工具调用与结果），下一轮原样传回，
+ * 交给模型的前缀逐字节不变。对话存在哪由调用方决定，agent 本身不存状态。
  * MVP 里写成插件；方案中 agent 循环是 script 包，等 script 运行时做好再挪过去。
- * 后续加入：多轮对话（入参带 history）、model.compact 压缩历史。
+ * 后续加入：model.compact 压缩历史。
  */
 
 import type { Message, ToolCall } from "@earendil-works/pi-ai";
@@ -14,18 +16,22 @@ const PERSONA =
 const MAX_TURNS = 20;
 
 const assist = op({
-  input: z.object({ prompt: z.string() }),
+  input: z.object({
+    prompt: z.string(),
+    /** 之前几轮的历史：上一轮出参里的 history，原样传回 */
+    history: z.array(z.custom<Message>()).default([]),
+  }),
   only: ["fs", "model", "ui", "time"],
   impl: async (ctx, input) => {
     const tools = ctx.tools();
-    const history: Message[] = [{ role: "user", content: input.prompt, timestamp: await now(ctx) }];
+    const history: Message[] = [...input.history, { role: "user", content: input.prompt, timestamp: await now(ctx) }];
 
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       const r = await ctx.ops.model.complete({ systemPrompt: PERSONA, messages: history, tools });
       if (!r.ok) throw new Error(`model_complete rejected by ${r.by}: ${r.reason}`);
       const { message, calls, answer } = r.value;
       history.push(message);
-      if (calls.length === 0) return { answer };
+      if (calls.length === 0) return { answer, history };
 
       // 模型挑的工具：名字是变量，按名字调
       const results = await Promise.all(calls.map((call) => ctx.call(call.name, call.arguments)));
