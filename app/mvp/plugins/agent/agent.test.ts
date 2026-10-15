@@ -96,7 +96,7 @@ describe("agent_assist", () => {
 
     // 交给模型的工具：能力面里 fs 与 ui 的公开 Operation
     const tools = requests[0]!.messages.find((m) => m.role === "system")?.toolsAdded?.map((t) => t.name);
-    expect(tools).toEqual(["fs_list", "fs_read", "fs_write", "ui_ask"]);
+    expect(tools).toEqual(["fs_edit", "fs_find", "fs_grep", "fs_list", "fs_read", "fs_write", "ui_ask"]);
     expect(toolResultsIn(1)).toEqual([{ name: "fs_read", isError: false, text: "明天下午三点开会" }]);
 
     const [root, ...children] = events.filter((e) => e.type === "run.started");

@@ -13,7 +13,8 @@
     "types": ["bun"],
     "paths": {
       "stdlib": ["./stdlib/index.ts"],
-      "stdlib/*": ["./stdlib/*"]
+      "stdlib/*": ["./stdlib/*"],
+      "pi-tools": ["./node_modules/@earendil-works/pi-coding-agent/dist/core/tools/index"]
     }
   },
   "include": ["stdlib"]

@@ -10,7 +10,7 @@ export async function check(ctx: Ctx) {
   const read = await ctx.ops.fs.read({ path: "a.md" });
   if (read.ok) read.value satisfies string;
   const list = await ctx.ops.fs.list({});
-  if (list.ok) list.value satisfies { name: string; type: string }[];
+  if (list.ok) list.value satisfies string;
   const now = await ctx.call("time_now", null);
   if (now.ok) now.value satisfies number;
 
