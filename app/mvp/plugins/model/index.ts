@@ -1,13 +1,20 @@
 /**
- * model 插件：原语 model.complete，经 pi-ai 调模型（8.1）。模型取配置 model（「provider/模型 id」，缺省 deepseek/deepseek-flash）。
+ * model 插件：原语 model.complete 与 model.compact，经 pi-ai 调模型（8.1、8.3）。
+ * 模型取配置 model（「provider/模型 id」，缺省 deepseek/deepseek-flash）。
  * Operation 名本身就合模型对工具名的要求（names.ts），工具名、历史与事件处处同名，不做任何转写。
- * 后续加入：model.compact；把 usage 记到 Run 上；渲染 run.context；公开给 script 包。
+ * 后续加入：把 usage 记到 Run 上；渲染 run.context；公开给 script 包。
  */
 
-import type { Message, Tool, ToolCall } from "@earendil-works/pi-ai";
+import type { Message, Tool, ToolCall, UserMessage } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { op, plugin, type ToolSpec } from "stdlib";
+import { estimateTokens, splitAt, transcript, withSummary } from "./compact";
 import { findModel, models } from "./models";
+
+const SUMMARIZE =
+  "你负责压缩对话历史。把给你的对话记录写成一份摘要：之后的对话只看得到这份摘要和最近几轮。" +
+  "保留用户的目标、要求与偏好，已做的决定与结论，涉及的文件、数据与关键事实，做过的操作与结果，还没完成的事。" +
+  "不要编造，不要客套，用中文分条写，尽量简短。";
 
 const toolSpec = z.object({
   name: z.string(),
@@ -43,6 +50,41 @@ export default plugin((config: { model?: string }) => {
           const text = reply.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
           // message：这一轮的完整消息，调用方原样追加进历史；answer：没有工具调用时的回复
           return { message: reply, calls, answer: calls.length > 0 ? null : text };
+        },
+      }),
+
+      /**
+       * 压缩历史（8.3）：估出的大小超过 over 才压，最近 keep 轮原样保留，更早的由模型写成摘要，
+       * 并进保留部分的第一条用户消息。只在轮次边界调；压缩后的历史交回调用方，下一轮从它开始，同一段只压一次。
+       * 轮数不超过 keep 时没有可压的，原样返回
+       */
+      compact: op({
+        input: z.object({
+          history: z.array(z.custom<Message>()),
+          /** 阈值：历史估计超过这么多 token 才压 */
+          over: z.number().int().positive(),
+          /** 最近几轮原样保留（一轮从一条用户消息开始） */
+          keep: z.number().int().positive().default(2),
+        }),
+        impl: async (ctx, input) => {
+          const { history, over, keep } = input;
+          const at = estimateTokens(history) > over ? splitAt(history, keep) : 0;
+          if (at === 0) return { history, compacted: false };
+
+          const reply = await models.complete(
+            model,
+            {
+              systemPrompt: SUMMARIZE,
+              messages: [{ role: "user", content: transcript(history.slice(0, at)), timestamp: history[at]!.timestamp }],
+            },
+            { signal: ctx.signal },
+          );
+          if (reply.stopReason === "error" || reply.stopReason === "aborted") {
+            throw new Error(reply.errorMessage ?? reply.stopReason);
+          }
+          const summary = reply.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
+          const [first, ...rest] = history.slice(at);
+          return { history: [withSummary(summary, first as UserMessage), ...rest], compacted: true };
         },
       }),
     },

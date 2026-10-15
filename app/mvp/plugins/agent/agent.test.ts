@@ -38,10 +38,10 @@ beforeEach(async () => {
 });
 
 /**
- * 与入口相同的装配：fs 的工作区是 workspace，model 用 faux 模型。
+ * 与入口相同的装配：fs 的工作区是 workspace，model 用 faux 模型；agent 是 agent 插件的配置。
  * 每开一个 park，人从 answers 里取一个回答；没有了就不答，park 一直等着
  */
-async function boot(journalDir?: string) {
+async function boot(journalDir?: string, agent: { compactOver?: number } = {}) {
   const k = new Kernel({ journalDir });
   const log: HarnessEvent[] = [];
   k.events.subscribe((e) => log.push(e));
@@ -51,6 +51,7 @@ async function boot(journalDir?: string) {
   const config: Record<string, unknown> = {
     fs: { workspace },
     model: { model: `${faux.provider.id}/${faux.getModel().id}` },
+    agent,
   };
   for (const pkg of ["harness", "time"]) await loadPlugin(k, `stdlib/plugins/${pkg}`);
   for (const pkg of ["fs", "model", "ui", "agent"]) await loadPlugin(k, join(import.meta.dir, "..", pkg), config[pkg]);
@@ -102,7 +103,8 @@ describe("agent_assist", () => {
     expect(root).toMatchObject({ operation: "agent_assist", depth: 0 });
     const write = children.find((e) => e.operation === "fs_write")!;
     expect(children.map((e) => [e.operation, e.parent])).toEqual([
-      // 消息的时间戳经 time_now 取：用户消息一次，每轮工具结果一次
+      // 轮初检查一次要不要压缩历史；消息的时间戳经 time_now 取：用户消息一次，每轮工具结果一次
+      ["model_compact", root!.runId],
       ["time_now", root!.runId],
       ["model_complete", root!.runId],
       ["fs_read", root!.runId],
@@ -230,6 +232,36 @@ describe("多轮对话", () => {
     expect((second.value as Turn).answer).toBe("好的，用 md");
     expect((second.value as Turn).history.slice(0, history.length)).toEqual(history);
     expect(requests).toHaveLength(3);
+  });
+});
+
+describe("压缩历史", () => {
+  test("历史超过阈值：这一轮开头先压缩，交给模型的是压缩后的历史，出参的 history 从它开始", async () => {
+    // 阈值取 1：只要轮数超过 model_compact 缺省保留的 2 轮就压
+    ({ kernel } = await boot(undefined, { compactOver: 1 }));
+    faux.setResponses([step(fauxText("答一")), step(fauxText("答二")), step(fauxText("答三")), step(fauxText("摘要：问过一")), step(fauxText("答四"))]);
+
+    let history: Message[] = [];
+    for (const prompt of ["问一", "问二", "问三"]) {
+      const r = await assist(prompt, history);
+      if (!r.ok) throw new Error(r.reason);
+      history = (r.value as { history: Message[] }).history;
+    }
+    // 前三轮都不超过保留的轮数，没有压：每轮一次请求
+    expect(requests).toHaveLength(3);
+
+    const four = await assist("问四", history);
+    if (!four.ok) throw new Error(four.reason);
+    // 第四轮：先一次写摘要的请求，再一次正常的请求；第一轮换成摘要，并进第二轮的提问
+    expect(requests).toHaveLength(5);
+    expect(messagesIn(4).map((m) => (m.role === "user" ? m.content : m.role))).toEqual([
+      "[之前对话的摘要]\n摘要：问过一\n\n[接着对话]\n问二",
+      "assistant",
+      "问三",
+      "assistant",
+      "问四",
+    ]);
+    expect((four.value as { history: Message[] }).history).toEqual([...messagesIn(4), expect.objectContaining({ role: "assistant" })]);
   });
 });
 
