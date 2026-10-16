@@ -138,7 +138,7 @@ describe("通知类挂点", () => {
     kernel.unpark(root, true);
     await kernel.reap(root);
     expect(seen).toEqual(["start demo_wait", "park boolean", "exit demo_wait true"]);
-    expect(all.map((e) => e.type)).toEqual(["run.started", "park.opened", "park.closed", "run.exited"]);
+    expect(all.map((e) => e.type)).toEqual(["run.started", "park.opened", "park.closed", "run.exited", "run.reaped"]);
   });
 
   test("挂点出错（同步抛出或 async 拒绝）只记下，不影响 Run 与其他插件", async () => {
@@ -168,6 +168,7 @@ describe("通知类挂点", () => {
       "[harness] sync.afterRunStart on event #1 failed",
       "[harness] async.afterAny on event #1 failed",
       "[harness] async.afterAny on event #2 failed",
+      "[harness] async.afterAny on event #3 failed",
     ]);
   });
 });

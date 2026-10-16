@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,10 +11,10 @@ beforeEach(async () => {
 });
 
 /** 起一个跑着测试应用的进程；until 等它打印出某段文字 */
-function launch(mode: string) {
-  const proc = Bun.spawn([process.execPath, join(import.meta.dir, "__fixtures__", "host", "main.ts"), mode, dir], {
+function launch(mode: string, ...args: string[]) {
+  const proc = Bun.spawn([process.execPath, join(import.meta.dir, "__fixtures__", "host", "main.ts"), mode, dir, ...args], {
     stdout: "pipe",
-    stderr: "inherit",
+    stderr: "pipe",
   });
   let out = "";
   const reading = (async () => {
@@ -27,7 +28,8 @@ function launch(mode: string) {
     await reading;
     return { code, out };
   };
-  return { proc, until, exited };
+  const stderr = () => new Response(proc.stderr).text();
+  return { proc, until, exited, stderr };
 }
 
 describe("宿主", () => {
@@ -58,5 +60,23 @@ describe("宿主", () => {
     const { code, out } = await app.exited();
     expect(performance.now() - t0).toBeLessThan(2000);
     expect([code, out]).toEqual([0, "serving, recovered 0\nbusy\nstopped\n"]);
+  });
+
+  test("serve.http：启动后在 socket 上对外服务；同一个 socket 已有服务时第二个起不来；SIGINT 关停后删掉 socket", async () => {
+    const socket = join(dir, "h.sock");
+    const app = launch("http", socket);
+    const call = () =>
+      fetch("http://harness/operations/echo_say", { unix: socket, method: "POST", body: JSON.stringify({ text: "hi" }) }).then((r) => r.json());
+    let reply: unknown;
+    while (!reply) reply = await call().catch(() => undefined);
+    expect(reply).toMatchObject({ result: { ok: true, value: "echo: hi" } });
+
+    const second = launch("http", socket);
+    expect((await second.exited()).code).not.toBe(0);
+    expect(await second.stderr()).toContain(`a harness is already serving on ${socket}`);
+
+    app.proc.kill("SIGINT");
+    expect((await app.exited()).code).toBe(0);
+    expect(existsSync(socket)).toBe(false);
   });
 });

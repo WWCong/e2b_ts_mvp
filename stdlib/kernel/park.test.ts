@@ -73,6 +73,7 @@ describe("park 与 unpark", () => {
       ["park.closed", parkId()],
       ["run.exited", parkId()],
       ["run.exited", root],
+      ["run.reaped", root],
     ]);
     expect(events.find((e) => e.type === "park.closed")).toMatchObject({ result: { ok: true, value: true } });
   });
@@ -182,8 +183,9 @@ describe("park 与取消、关停", () => {
       ["run.killed", root],
       ["run.killed", id],
       ["park.closed", id],
+      ["run.reaped", root],
     ]);
-    expect(events.at(-1)).toMatchObject({ result: cancelled });
+    expect(events.find((e) => e.type === "park.closed")).toMatchObject({ result: cancelled });
     expect(() => kernel.unpark(id, true)).toThrow(`not parked: ${id}`);
   });
 

@@ -58,6 +58,7 @@ describe("子调用", () => {
       ["run.started", c!.runId],
       ["run.exited", c!.runId],
       ["run.exited", p!.runId],
+      ["run.reaped", p!.runId],
     ]);
   });
 

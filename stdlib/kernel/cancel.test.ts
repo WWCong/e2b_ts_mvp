@@ -44,6 +44,7 @@ describe("取消", () => {
       ["run.started", idOf("demo_child")],
       ["run.killed", root],
       ["run.killed", idOf("demo_child")],
+      ["run.reaped", root],
     ]);
   });
 

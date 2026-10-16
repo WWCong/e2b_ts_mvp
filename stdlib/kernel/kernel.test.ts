@@ -25,7 +25,7 @@ async function setup() {
 }
 
 describe("Kernel", () => {
-  test("调用并收割：得到结果，事件流依次为 run.started、run.exited", async () => {
+  test("调用并收割：得到结果，事件流依次为 run.started、run.exited；取走结果发 run.reaped", async () => {
     const { kernel, events } = await setup();
     const runId = kernel.submit("math_double", { n: 21 });
 
@@ -33,6 +33,7 @@ describe("Kernel", () => {
     expect(events.map((e) => [e.seq, e.type, e.runId])).toEqual([
       [1, "run.started", runId],
       [2, "run.exited", runId],
+      [3, "run.reaped", runId],
     ]);
     expect(events[1]).toMatchObject({ operation: "math_double", result: { ok: true, value: { n: 42 } } });
   });
@@ -43,7 +44,7 @@ describe("Kernel", () => {
 
     const rejected: Rejected = { ok: false, by: "demo_fail", reason: "boom", retryable: false };
     expect(await kernel.reap(runId)).toEqual(rejected);
-    expect(events.at(-1)).toMatchObject({ type: "run.exited", result: rejected });
+    expect(events.find((e) => e.type === "run.exited")).toMatchObject({ result: rejected });
   });
 
   test("结果保留到收割；收割后 Run 从内核移除", async () => {
@@ -91,6 +92,6 @@ describe("Kernel", () => {
     } finally {
       console.error = origError;
     }
-    expect(events.map((e) => e.type)).toEqual(["run.started", "run.exited"]);
+    expect(events.map((e) => e.type)).toEqual(["run.started", "run.exited", "run.reaped"]);
   });
 });

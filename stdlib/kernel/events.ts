@@ -55,6 +55,10 @@ export type EventBody =
       inflight: string[];
       artifactChanged: boolean;
     }
+  /**
+   * 根 Run 的结果被取走了（reap），或放得太久没人取、启动时清掉了（expired）。之后不再保留，提交阶段删掉它的日志
+   */
+  | { type: "run.reaped"; runId: string; operation: string; expired?: boolean }
   | ({ type: "decorator.rewrote"; phase: "input" | "result"; value: unknown } & Link)
   | ({ type: "decorator.rejected"; result: Rejected } & Link)
   | ({ type: "decorator.failed"; onError: OnError; error: string } & Link);

@@ -130,7 +130,7 @@ describe("beforeRunExit / beforeParkOpen / beforeParkClose", () => {
     const { events, run } = await setup({ beforeParkOpen: () => ({ veto: "无人值守" }) });
 
     expect(await run("demo_wait", null)).toMatchObject({ ok: false, by: "demo_wait", reason: "无人值守" });
-    expect(events.map((e) => e.type)).toEqual(["run.started", "park.closed", "run.exited"]);
+    expect(events.map((e) => e.type)).toEqual(["run.started", "park.closed", "run.exited", "run.reaped"]);
     expect(events[1]).toMatchObject({ step: 0, result: by("无人值守") });
   });
 
@@ -182,7 +182,7 @@ describe("拦下与恢复", () => {
     const two = await setup({ beforeTreeRecover: (e) => (e.runId === root ? { veto: "太旧了" } : undefined) }, twoDir);
     expect(two.roots).toEqual([root]);
     expect(await two.kernel.reap(root)).toEqual(by("太旧了"));
-    expect(two.events.map((e) => e.type)).toEqual(["tree.recovered", "run.killed"]);
+    expect(two.events.map((e) => e.type)).toEqual(["tree.recovered", "run.killed", "run.reaped"]);
     expect(two.events[1]).toMatchObject({ reason: "rejected by policy: 太旧了" });
     expect(readdirSync(join(twoDir, "diverged"))).toEqual([`${root}.jsonl`]);
   });

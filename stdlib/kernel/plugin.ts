@@ -50,6 +50,7 @@ export const AFTER = {
   "run.started": "afterRunStart",
   "run.exited": "afterRunExit",
   "run.killed": "afterRunKill",
+  "run.reaped": "afterRunReap",
   "call.rejected": "afterCallReject",
   "park.opened": "afterParkOpen",
   "park.closed": "afterParkClose",

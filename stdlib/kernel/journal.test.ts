@@ -99,7 +99,7 @@ describe("写前日志", () => {
     ]);
   });
 
-  test("先记后做：park 的值落盘后才关 park，子 Run 的结果落盘后才交给父；树结束删日志", async () => {
+  test("先记后做：park 的值落盘后才关 park，子 Run 的结果落盘后才交给父；树结束记 exit 行，结果取走才删日志", async () => {
     const { kernel, events, file, lines, parkIds } = await setup();
     kernel.register({ name: "demo_ask", input: z.null(), impl: (ctx) => ctx.call("demo_park", ask("?")) });
     const root = kernel.submit("demo_ask", null);
@@ -117,6 +117,11 @@ describe("写前日志", () => {
       "run.exited": { type: "done", runId: root, seq: 0, result: { ok: true, value: true } },
     });
     expect(events.at(-1)).toMatchObject({ type: "run.exited", runId: root });
+    // demo_ask 返回的是子调用的结果对象
+    const result = { ok: true, value: { ok: true, value: true } } as const;
+    expect(lines(root).at(-1)).toEqual({ type: "exit", runId: root, result, at: events.at(-1)!.ts });
+
+    await kernel.reap(root);
     expect(existsSync(file(root))).toBe(false);
   });
 
@@ -151,7 +156,8 @@ describe("写前日志", () => {
       ["park.opened", "call"],
       ["park.closed", "park"],
       ["run.exited", "done"],
-      ["run.exited", undefined],
+      ["run.exited", "exit"],
+      ["run.reaped", undefined],
     ]);
     // 推出日志行要用的字段，事件里都有
     expect(events.find((e) => e.type === "run.started")).toMatchObject({ runId: root, artifact: expect.any(String) });
@@ -174,13 +180,15 @@ describe("写前日志", () => {
     ]);
   });
 
-  test("取消其中一支：父的 done 记下取消的拒绝；取消整棵树：删日志", async () => {
+  test("取消其中一支：父的 done 记下取消的拒绝；取消整棵树：记 exit 行，结果取走才删日志", async () => {
     const { kernel, file, lines, parkIds } = await setup();
     const root = kernel.submit("demo_both", null);
 
     kernel.cancel(parkIds()[0]!);
     expect(lines(root).at(-1)).toEqual({ type: "done", runId: root, seq: 0, result: cancelled });
     kernel.cancel(root);
+    expect(lines(root).at(-1)).toMatchObject({ type: "exit", runId: root, result: cancelled });
+    expect(await kernel.reap(root)).toEqual(cancelled);
     expect(existsSync(file(root))).toBe(false);
   });
 

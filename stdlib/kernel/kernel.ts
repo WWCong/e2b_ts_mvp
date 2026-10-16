@@ -6,7 +6,7 @@
 
 import { z } from "zod";
 import { runChain, type DecoratorCtx, type DecoratorDef } from "./chain";
-import type { Outside } from "./entry";
+import type { ApiInfo, Outside, ParkInfo, RunInfo } from "./outside";
 import { EventStream, notify, type EventBody, type HarnessEvent } from "./events";
 import { AFTER, EVENT_HOOKS, PLUGIN_KEYS, type BeforeEvent, type BeforeHook, type PluginObject } from "./plugin";
 import { checkName, checkPackageName, packageOf } from "./names";
@@ -47,12 +47,18 @@ export type KernelConfig = {
   journalDir?: string;
   /** 资源保险丝（3.4）。后续加入：同时等待的 park 数上限 */
   kernel?: { maxDepth?: number; maxLiveRuns?: number };
+  /** 根 Run 的结果没人取，在日志目录里留多久，缺省 7 天：启动时清掉更久的 */
+  resultTtlMs?: number;
 };
 
 const FUSE_DEFAULTS = { maxDepth: 32, maxLiveRuns: 1024 };
+const RESULT_TTL_MS = 7 * 24 * 3600_000;
 
-/** 等待中的 park：它是这个 Run 的第 seq 步；送来的值按 schema 校验；closed 在关闭时带着产出兑现 */
-type Park = { seq: number; schema: z.ZodType; closed: PromiseWithResolvers<Result> };
+/**
+ * 等待中的 park：它是这个 Run 的第 seq 步；送来的值按 schema 校验（json 是原样的 JSON Schema）；
+ * payload 交给外部；closed 在关闭时带着产出兑现
+ */
+type Park = { seq: number; schema: z.ZodType; json: Record<string, unknown>; payload: unknown; closed: PromiseWithResolvers<Result> };
 
 /** 恢复时重新执行一个 Run：沿用原 runId，attempt 加一；logs 是这棵树里每个 Run 在日志里的记录 */
 type Resume = { runId: string; attempt: number; logs: Map<string, RunLog> };
@@ -108,6 +114,8 @@ export class Kernel {
   private readonly decorators = new Map<string, DecoratorDef>();
   /** 公开 Operation 的工具描述，注册时生成 */
   private readonly tools = new Map<string, ToolSpec>();
+  /** 声明了 api 的 Operation，按名字 */
+  private readonly apis = new Map<string, ApiInfo>();
   /** runId → 退出结果。结果保留到调用方收割，收割后移除（3.4） */
   private readonly exits = new Map<string, Promise<Result>>();
   /** runId → 在途 Run */
@@ -120,6 +128,10 @@ export class Kernel {
   private artifactDigest?: string;
   /** 启动时恢复的树：根的 runId 与发起它的入口，入口经 outside().recovered() 认领自己的 */
   private recoveredRoots: { runId: string; origin?: string }[] = [];
+  /** 结果还没被取走的树的根：与 exits 同进同出 */
+  private readonly roots = new Map<string, { operation: string; origin?: string }>();
+  /** 关停时被杀的根：结果是关停造成的，取走它不算取走（日志留着，重启后接着做） */
+  private readonly stoppedRoots = new Set<string>();
 
   constructor(private readonly config: KernelConfig = {}) {
     this.fuse = { ...FUSE_DEFAULTS, ...config.kernel };
@@ -152,7 +164,7 @@ export class Kernel {
     this.plugins.set(pkg, plugin);
   }
 
-  /** 名字须合命名规则；公开的 Operation 须写 usage；入参 schema 转不成 JSON Schema 的（如 z.date()）在这里就报错 */
+  /** 名字须合命名规则；公开的 Operation 须写 usage；公开或 api 的入参 schema 转不成 JSON Schema 的（如 z.date()）在这里就报错 */
   register(op: Operation): void {
     checkName(op.name);
     if (this.operations.has(op.name)) throw new Error(`duplicate operation: ${op.name}`);
@@ -161,6 +173,9 @@ export class Kernel {
       // io: "input" 按调用方要填的形状生成：带默认值的字段是可选的
       const inputSchema = z.toJSONSchema(op.input, { io: "input" }) as Record<string, unknown>;
       this.tools.set(op.name, { name: op.name, description: op.usage, inputSchema });
+    }
+    if (op.api) {
+      this.apis.set(op.name, { name: op.name, usage: op.usage, input: z.toJSONSchema(op.input, { io: "input" }) as Record<string, unknown> });
     }
     this.operations.set(op.name, op);
     this.artifactDigest = undefined;
@@ -276,8 +291,8 @@ export class Kernel {
   }
 
   /**
-   * 交给入口的对外接口（entry.ts）：调用只能调声明了 api 的 Operation，发起的树的根记下 origin（入口的包名），
-   * 写进日志、重启后还在；recovered 只列 origin 是它的恢复出来的树。收割、送值、撤回同宿主
+   * 交给服务接口与入口的对外接口（outside.ts）：调用只能调声明了 api 的 Operation，发起的树的根记下 origin，
+   * 写进日志、重启后还在；recovered 只列 origin 是它的恢复出来的树。其余同宿主
    */
   outside(origin: string): Outside {
     return {
@@ -286,9 +301,13 @@ export class Kernel {
         return this.launch(name, input, origin);
       },
       recovered: () => this.recoveredRoots.filter((r) => r.origin === origin).map((r) => r.runId),
+      runs: () => this.runs(),
+      wait: (runId) => this.wait(runId),
       reap: (runId) => this.reap(runId),
+      parks: () => this.parks(),
       unpark: (id, value) => this.unpark(id, value),
       withdraw: (id, reason) => this.withdraw(id, reason),
+      operations: () => [...this.apis.values()],
     };
   }
 
@@ -300,19 +319,32 @@ export class Kernel {
     const veto = this.before("beforeRunStart", this.started(admitted));
     if (veto) throw new Error(`rejected by ${veto.by}: ${veto.reason}`);
     const { runId } = admitted.run;
+    this.roots.set(runId, { operation: name, origin });
     this.exits.set(runId, this.execute(admitted));
     return runId;
   }
 
   /**
-   * 启动时恢复：读写前日志，重建所有没结束的树，返回它们根的 runId。
+   * 启动时恢复：读写前日志，重建所有没结束的树，返回它们根的 runId；已结束、结果还没被取走的也在内，结果留着等人取
+   * （放得比 resultTtlMs 久的清掉）。
    * 根与崩溃时正在执行的 Run 用原 runId 重新执行，attempt 加一。重新执行时按序号回放：
    * 已完成的调用回送记下的结果（不执行、不过链），已回答的 park 直接拿到回答，没回答的用原 id 重新开出。
    */
   private recover(): { runId: string; origin?: string }[] {
     if (!this.journal) return [];
-    return this.journal.readAll().map((entries) => {
-      const { root, runs } = fold(entries);
+    const ttl = this.config.resultTtlMs ?? RESULT_TTL_MS;
+    return this.journal.readAll().flatMap((entries) => {
+      const { root, runs, exit } = fold(entries);
+      const { runId, operation, origin } = root;
+      if (exit && Date.now() - exit.at > ttl) {
+        this.events.emit({ type: "run.reaped", runId, operation, expired: true });
+        return [];
+      }
+      this.roots.set(runId, { operation, origin });
+      if (exit) {
+        this.exits.set(runId, Promise.resolve(exit.result));
+        return [{ runId, origin }];
+      }
       const logs = [...runs];
       const tree: BeforeEvent<"beforeTreeRecover"> = {
         type: "tree.recovered",
@@ -345,17 +377,41 @@ export class Kernel {
       } else {
         this.exits.set(root.runId, this.execute(admitted));
       }
-      return { runId: root.runId, origin: root.origin };
+      return [{ runId, origin }];
     });
   }
 
-  /** 对外接口·收割：等 Run 退出并取走结果 */
-  async reap(runId: string): Promise<Result> {
+  /** 对外接口·等结果：等树结束，不取走 */
+  async wait(runId: string): Promise<Result> {
     const exit = this.exits.get(runId);
     if (!exit) throw new Error(`unknown run: ${runId}`);
-    const result = await exit;
-    this.exits.delete(runId);
+    return exit;
+  }
+
+  /**
+   * 对外接口·收割：等树结束并取走结果，发 run.reaped（提交阶段删掉它的日志）。每棵树只能取一次。
+   * 关停时被杀的树除外：取到的是关停造成的拒绝，日志留着，重启后接着做
+   */
+  async reap(runId: string): Promise<Result> {
+    const result = await this.wait(runId);
+    if (!this.exits.delete(runId)) throw new Error(`already reaped: ${runId}`);
+    const { operation } = this.roots.get(runId)!;
+    this.roots.delete(runId);
+    if (!this.stoppedRoots.delete(runId)) this.events.emit({ type: "run.reaped", runId, operation });
     return result;
+  }
+
+  /** 结果还没被取走的树 */
+  runs(): RunInfo[] {
+    return [...this.roots].map(([runId, { operation, origin }]) => ({ runId, operation, origin, done: !this.lives.has(runId) }));
+  }
+
+  /** 等待中的 park */
+  parks(): ParkInfo[] {
+    return [...this.lives.values()].flatMap((live) => {
+      const { run, park } = live;
+      return park ? [{ id: run.runId, root: rootOf(live).run.runId, operation: run.operation, schema: park.json, payload: park.payload }] : [];
+    });
   }
 
   /**
@@ -636,6 +692,7 @@ export class Kernel {
    */
   private kill(live: LiveRun, reason: string): void {
     transition(live.run, "killed");
+    if (reason === "shutdown" && !live.parent) this.stoppedRoots.add(live.run.runId);
     this.events.emit({ type: "run.killed", runId: live.run.runId, operation: live.run.operation, reason });
     if (reason !== "shutdown" && live.park) this.closePark(live, live.park, reject("kernel", reason));
     live.abort.abort();
@@ -738,7 +795,7 @@ export class Kernel {
         result = veto;
       } else {
         const closed = Promise.withResolvers<Result>();
-        live.park = { seq, schema: parsed, closed };
+        live.park = { seq, schema: parsed, json: schema, payload, closed };
         this.refresh(live);
         this.events.emit({ type: "park.opened", runId: run.runId, schema, payload });
         result = await closed.promise;

@@ -24,7 +24,9 @@ export type Entry =
   /** 第 seq 步的 park 关闭：送来了值，或被撤回 */
   | { type: "park"; runId: string; seq: number; result: Result }
   /** 恢复时重新执行了这个 Run，这是第 attempt 次 */
-  | { type: "retry"; runId: string; attempt: number };
+  | { type: "retry"; runId: string; attempt: number }
+  /** 最后一行：根 Run 结束了（退出或被取消），结果留到被取走（run.reaped）再删；at 是结束的时刻 */
+  | { type: "exit"; runId: string; result: Result; at: number };
 
 /**
  * 日志里一个序号上记下的东西：调用（完成了才有 result），或关闭了的 park 的产出。
@@ -37,15 +39,17 @@ export type Recorded =
 /** 一个 Run 在日志里的记录：按序号记下的东西，与已执行了几次 */
 export type RunLog = { entries: Map<number, Recorded>; attempt: number };
 
-/** 一棵没结束的树：根，与树里每个 Run 的记录 */
+/** 一棵树：根，与树里每个 Run 的记录；已结束、结果还没被取走的带着 exit */
 export type Tree = {
   root: { runId: string; operation: string; input: unknown; artifact: string; origin?: string };
   runs: Map<string, RunLog>;
+  exit?: { result: Result; at: number };
 };
 
 /** 把一棵树的日志按行归并成每个 Run 的记录 */
 export function fold(entries: Entry[]): Tree {
   let root: Tree["root"] | undefined;
+  let exit: Tree["exit"];
   const runs = new Map<string, RunLog>();
   const completed = new Map<string, number>();
   const nextOrder = (runId: string) => {
@@ -63,13 +67,14 @@ export function fold(entries: Entry[]): Tree {
     else if (e.type === "call") of(e.runId).entries.set(e.seq, { type: "call", target: e.target, input: e.input, child: e.child });
     else if (e.type === "park") of(e.runId).entries.set(e.seq, { type: "park", result: e.result, order: nextOrder(e.runId) });
     else if (e.type === "retry") of(e.runId).attempt = e.attempt;
+    else if (e.type === "exit") exit = { result: e.result, at: e.at };
     else {
       const call = of(e.runId).entries.get(e.seq);
       if (call?.type === "call") Object.assign(call, { result: e.result, order: nextOrder(e.runId) });
     }
   }
   if (!root) throw new Error("journal without root");
-  return { root, runs };
+  return { root, runs, exit };
 }
 
 export function digest(input: unknown): string {
@@ -95,8 +100,9 @@ export class Journal {
    * - run.started：根记 root 行（外部给的原样入参、产物摘要与发起它的入口）；子 Run 记父的 call 行（入参只存摘要）；
    *   恢复时重新执行的（带 attempt）只记 retry 行，它的 call 行已在日志里
    * - call.rejected：发起方的 call 行（没有子 Run）与 done 行
-   * - run.exited / run.killed：父还在就记父的 done 行（被杀的记内核的拒绝）。根结束或被取消删日志；
+   * - run.exited / run.killed：父还在就记父的 done 行（被杀的记内核的拒绝）。根退出或被取消记 exit 行，结果留到被取走；
    *   关停保留，重启后接着跑；别的原因（diverged、恢复时根建不起来）移到 diverged/ 留着排查
+   * - run.reaped：结果取走了（或过期），删日志
    * - park.closed：park 行
    * - tree.recovered：记下恢复的树的根
    */
@@ -140,20 +146,24 @@ export class Journal {
         const place = this.places.get(event.runId);
         if (!place) return;
         this.places.delete(event.runId);
-        if (place.parent === undefined) return this.end(place.root, event.type === "run.exited" ? "exited" : event.reason);
+        if (place.parent === undefined) return this.end(place.root, event);
         // 父已结束或被杀（整棵树在被杀）：不记
         if (!this.places.has(place.parent)) return;
         const result = event.type === "run.exited" ? event.result : reject("kernel", event.reason);
         return this.append(place.root, { type: "done", runId: place.parent, seq: place.step!, result });
       }
+      case "run.reaped":
+        return this.delete(event.runId);
     }
   }
 
-  /** 树结束：正常退出或被取消删日志；关停只关文件；别的原因移到 diverged/ */
-  private end(root: string, how: string): void {
-    if (how === "exited" || how === "cancelled") this.delete(root);
-    else if (how === "shutdown") this.close(root);
-    else this.retire(root);
+  /** 树结束：退出或被取消记 exit 行，结果留到被取走；关停只关文件；别的原因移到 diverged/ */
+  private end(root: string, event: Extract<HarnessEvent, { type: "run.exited" | "run.killed" }>): void {
+    if (event.type === "run.killed" && event.reason === "shutdown") return this.close(root);
+    if (event.type === "run.killed" && event.reason !== "cancelled") return this.retire(root);
+    const result = event.type === "run.exited" ? event.result : reject("kernel", event.reason);
+    this.append(root, { type: "exit", runId: root, result, at: event.ts });
+    this.close(root);
   }
 
   private append(root: string, entry: Entry): void {

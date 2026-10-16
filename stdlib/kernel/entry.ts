@@ -7,22 +7,10 @@
  * 启停是宿主的事，入口与插件都碰不到。
  */
 
+import type { Outside } from "./outside";
 import type { PluginObject } from "./plugin";
-import type { Result } from "./run";
 
-/** 入口拿到的对外接口（Kernel.outside） */
-export type Outside = {
-  /** 按名字起一棵 Run 树，返回根的 runId；只能调声明了 api 的 Operation，树的根记下是哪个入口发起的 */
-  submit(name: string, input: unknown): string;
-  /** 启动时恢复的、由这个入口发起的树的根 runId：上次没做完的，由它收割 */
-  recovered(): string[];
-  /** 等树结束并取走结果；每棵树只能收一次 */
-  reap(runId: string): Promise<Result>;
-  /** 把值送给等待中的 park（id 为 park 的 runId），按它的 schema 校验；不在等待或值不符时抛异常 */
-  unpark(id: string, value: unknown): void;
-  /** 撤回等待中的 park，它以拒绝返回 */
-  withdraw(id: string, reason: string): void;
-};
+export type { Outside };
 
 /** 入口对象：插件对象加上服务循环。serve 结束表示这个入口不再服务（比如终端的输入结束） */
 export type EntryObject = PluginObject & { serve(): Promise<void> };
