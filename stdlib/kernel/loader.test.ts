@@ -12,7 +12,7 @@ async function setup(config?: unknown) {
   kernel.events.subscribe((e) => events.push(e));
   await loadPlugin(kernel, fixture("greet"), config);
   await kernel.boot();
-  const run = (name: string, input: unknown) => kernel.reap(kernel.start(name, input));
+  const run = (name: string, input: unknown) => kernel.reap(kernel.submit(name, input));
   return { events, run };
 }
 
@@ -46,7 +46,7 @@ describe("装载插件包", () => {
     await expect(loadPlugin(new Kernel(), fixture("bad_pkg"))).rejects.toThrow("invalid package name: bad_pkg");
   });
 
-  test("默认导出不是 plugin()：装载失败", async () => {
-    await expect(loadPlugin(new Kernel(), fixture("bad"))).rejects.toThrow("bad: default export is not plugin()");
+  test("默认导出不是 plugin() 也不是 entry()：装载失败", async () => {
+    await expect(loadPlugin(new Kernel(), fixture("bad"))).rejects.toThrow("bad: default export is not plugin() or entry()");
   });
 });

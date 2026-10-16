@@ -34,7 +34,7 @@ async function setup() {
 describe("取消", () => {
   test("取消根 Run：连同子孙转 killed，收割得到内核的拒绝，不再有 run.exited", async () => {
     const { kernel, events, idOf } = await setup();
-    const root = kernel.start("demo_parent", null);
+    const root = kernel.submit("demo_parent", null);
 
     expect(kernel.cancel(root)).toBe(true);
     expect(await kernel.reap(root)).toEqual(cancelled);
@@ -49,7 +49,7 @@ describe("取消", () => {
 
   test("取消子 Run：父拿到内核的拒绝，照常往下执行", async () => {
     const { kernel, idOf } = await setup();
-    const root = kernel.start("demo_parent", null);
+    const root = kernel.submit("demo_parent", null);
 
     kernel.cancel(idOf("demo_child"));
     expect(await kernel.reap(root)).toEqual({ ok: true, value: cancelled });
@@ -70,7 +70,7 @@ describe("取消", () => {
         }
       },
     });
-    const root = kernel.start("demo_outer", null);
+    const root = kernel.submit("demo_outer", null);
 
     kernel.cancel(root);
     await Bun.sleep(1);
@@ -90,7 +90,7 @@ describe("取消", () => {
         return "ignored";
       },
     });
-    const id = kernel.start("demo_stubborn", null);
+    const id = kernel.submit("demo_stubborn", null);
 
     kernel.cancel(id);
     gate.resolve();
@@ -120,7 +120,7 @@ describe("取消", () => {
         return "done";
       },
     });
-    const id = kernel.start("demo_work", null);
+    const id = kernel.submit("demo_work", null);
 
     kernel.cancel(id);
     gate.resolve();
@@ -132,7 +132,7 @@ describe("取消", () => {
   test("取消已结束或不存在的 Run：返回 false", async () => {
     const { kernel, gate } = await setup();
     gate.resolve();
-    const root = kernel.start("demo_parent", null);
+    const root = kernel.submit("demo_parent", null);
     await kernel.reap(root);
 
     expect(kernel.cancel(root)).toBe(false);
@@ -151,11 +151,11 @@ describe("关停", () => {
         return ctx.call("demo_child", null);
       },
     });
-    const root = kernel.start("demo_later", null);
+    const root = kernel.submit("demo_later", null);
 
     // 超时给得很长：停下来靠的是「没有正在执行的了」，不是超时
     const stopping = kernel.stop(60_000);
-    expect(() => kernel.start("demo_later", null)).toThrow("harness is stopping");
+    expect(() => kernel.submit("demo_later", null)).toThrow("harness is stopping");
     gate.resolve();
     await stopping;
     expect(await kernel.reap(root)).toEqual({ ok: false, by: "kernel", reason: "shutdown", retryable: false });
@@ -164,7 +164,7 @@ describe("关停", () => {
 
   test("到超时仍有正在执行的：按 killed 处理，原因是 shutdown", async () => {
     const { kernel, events } = await setup();
-    const root = kernel.start("demo_parent", null);
+    const root = kernel.submit("demo_parent", null);
 
     await kernel.stop(5);
     expect(await kernel.reap(root)).toEqual({ ok: false, by: "kernel", reason: "shutdown", retryable: false });
@@ -176,7 +176,7 @@ describe("关停", () => {
 
   test("stop(0) 强杀：什么也不等，立即按 shutdown 杀掉", async () => {
     const { kernel, events, gate } = await setup();
-    const root = kernel.start("demo_parent", null);
+    const root = kernel.submit("demo_parent", null);
 
     await kernel.stop(0);
     gate.resolve();

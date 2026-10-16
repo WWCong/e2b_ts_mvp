@@ -15,8 +15,8 @@ import { reject, type Result } from "./run";
  * 入参只存摘要：恢复时重新执行的 Run 会再发起同样的调用，按「序号、目标、入参摘要」比对。
  */
 export type Entry =
-  /** 第一行：树的根与外部给的入参；artifact 是当时装配的产物摘要，恢复时比对 */
-  | { type: "root"; runId: string; operation: string; input: unknown; artifact: string }
+  /** 第一行：树的根与外部给的入参；artifact 是当时装配的产物摘要，恢复时比对；origin 是发起它的入口 */
+  | { type: "root"; runId: string; operation: string; input: unknown; artifact: string; origin?: string }
   /** 发起了一个调用；建了子 Run 时记下它的 runId，在内核就被拒的没有 */
   | { type: "call"; runId: string; seq: number; target: string; input: string; child?: string }
   /** 第 seq 个调用完成。同一个 Run 的 done 行的先后就是完成顺序 */
@@ -38,7 +38,10 @@ export type Recorded =
 export type RunLog = { entries: Map<number, Recorded>; attempt: number };
 
 /** 一棵没结束的树：根，与树里每个 Run 的记录 */
-export type Tree = { root: { runId: string; operation: string; input: unknown; artifact: string }; runs: Map<string, RunLog> };
+export type Tree = {
+  root: { runId: string; operation: string; input: unknown; artifact: string; origin?: string };
+  runs: Map<string, RunLog>;
+};
 
 /** 把一棵树的日志按行归并成每个 Run 的记录 */
 export function fold(entries: Entry[]): Tree {
@@ -56,7 +59,7 @@ export function fold(entries: Entry[]): Tree {
     return log;
   };
   for (const e of entries) {
-    if (e.type === "root") root = { runId: e.runId, operation: e.operation, input: e.input, artifact: e.artifact };
+    if (e.type === "root") root = { runId: e.runId, operation: e.operation, input: e.input, artifact: e.artifact, origin: e.origin };
     else if (e.type === "call") of(e.runId).entries.set(e.seq, { type: "call", target: e.target, input: e.input, child: e.child });
     else if (e.type === "park") of(e.runId).entries.set(e.seq, { type: "park", result: e.result, order: nextOrder(e.runId) });
     else if (e.type === "retry") of(e.runId).attempt = e.attempt;
@@ -89,7 +92,7 @@ export class Journal {
 
   /**
    * 提交阶段：由事件推出日志行并落盘。
-   * - run.started：根记 root 行（外部给的原样入参与产物摘要）；子 Run 记父的 call 行（入参只存摘要）；
+   * - run.started：根记 root 行（外部给的原样入参、产物摘要与发起它的入口）；子 Run 记父的 call 行（入参只存摘要）；
    *   恢复时重新执行的（带 attempt）只记 retry 行，它的 call 行已在日志里
    * - call.rejected：发起方的 call 行（没有子 Run）与 done 行
    * - run.exited / run.killed：父还在就记父的 done 行（被杀的记内核的拒绝）。根结束或被取消删日志；
@@ -109,7 +112,7 @@ export class Journal {
         const { runId, operation, input } = event;
         if (event.attempt) return this.append(place.root, { type: "retry", runId, attempt: event.attempt });
         if (event.parent === undefined) {
-          return this.append(runId, { type: "root", runId, operation, input, artifact: event.artifact! });
+          return this.append(runId, { type: "root", runId, operation, input, artifact: event.artifact!, origin: event.origin });
         }
         return this.append(place.root, {
           type: "call",

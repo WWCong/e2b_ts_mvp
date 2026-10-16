@@ -27,7 +27,7 @@ async function setup() {
 describe("Kernel", () => {
   test("调用并收割：得到结果，事件流依次为 run.started、run.exited", async () => {
     const { kernel, events } = await setup();
-    const runId = kernel.start("math_double", { n: 21 });
+    const runId = kernel.submit("math_double", { n: 21 });
 
     expect(await kernel.reap(runId)).toEqual({ ok: true, value: { n: 42 } });
     expect(events.map((e) => [e.seq, e.type, e.runId])).toEqual([
@@ -39,7 +39,7 @@ describe("Kernel", () => {
 
   test("实现抛异常：以拒绝结果退出，by 为该 Operation", async () => {
     const { kernel, events } = await setup();
-    const runId = kernel.start("demo_fail", {});
+    const runId = kernel.submit("demo_fail", {});
 
     const rejected: Rejected = { ok: false, by: "demo_fail", reason: "boom", retryable: false };
     expect(await kernel.reap(runId)).toEqual(rejected);
@@ -48,7 +48,7 @@ describe("Kernel", () => {
 
   test("结果保留到收割；收割后 Run 从内核移除", async () => {
     const { kernel, events } = await setup();
-    const runId = kernel.start("math_double", { n: 1 });
+    const runId = kernel.submit("math_double", { n: 1 });
     await Bun.sleep(0);
     expect(events.at(-1)?.type).toBe("run.exited");
 
@@ -58,7 +58,7 @@ describe("Kernel", () => {
 
   test("未注册的名字与重复注册都直接报错", async () => {
     const { kernel } = await setup();
-    expect(() => kernel.start("nope_nope", {})).toThrow("unknown operation");
+    expect(() => kernel.submit("nope_nope", {})).toThrow("unknown operation");
     expect(() => kernel.register({ name: "math_double", input: z.any(), impl: async () => 0 })).toThrow("duplicate operation");
   });
 
@@ -70,8 +70,8 @@ describe("Kernel", () => {
       impl: async (_ctx, input) => input,
     });
 
-    expect(() => kernel.start("demo_greet", { name: 1 })).toThrow("invalid input for demo_greet");
-    expect(await kernel.reap(kernel.start("demo_greet", { name: "张三", extra: true }))).toEqual({
+    expect(() => kernel.submit("demo_greet", { name: 1 })).toThrow("invalid input for demo_greet");
+    expect(await kernel.reap(kernel.submit("demo_greet", { name: "张三", extra: true }))).toEqual({
       ok: true,
       value: { name: "张三", times: 1 },
     });
@@ -86,7 +86,7 @@ describe("Kernel", () => {
     const origError = console.error;
     console.error = () => {};
     try {
-      const runId = kernel.start("math_double", { n: 2 });
+      const runId = kernel.submit("math_double", { n: 2 });
       expect(await kernel.reap(runId)).toEqual({ ok: true, value: { n: 4 } });
     } finally {
       console.error = origError;

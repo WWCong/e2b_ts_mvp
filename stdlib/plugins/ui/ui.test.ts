@@ -20,7 +20,7 @@ async function setup() {
   const lastPark = () => events.filter((e) => e.type === "park.opened").at(-1)!;
   /** 起一个 Run，等它开出 park 后送去 answer，返回收割结果 */
   const answer = (name: string, input: unknown, value: unknown) => {
-    const id = kernel.start(name, input);
+    const id = kernel.submit(name, input);
     kernel.unpark(lastPark().runId, value);
     return kernel.reap(id);
   };
@@ -32,7 +32,7 @@ describe("ui_ask", () => {
     const { kernel, lastPark, answer } = await setup();
     const input = { question: "用哪种格式？", options: ["md", "txt"] };
 
-    const root = kernel.start("ui_ask", input);
+    const root = kernel.submit("ui_ask", input);
     expect(lastPark().payload).toEqual(input);
     expect(() => kernel.unpark(lastPark().runId, { option: "pdf" })).toThrow("invalid value for park");
     kernel.unpark(lastPark().runId, { option: "md", text: "标题用日期" });
@@ -46,7 +46,7 @@ describe("ui_ask", () => {
     const input = { question: "文件名叫什么？" };
     expect(await answer("ui_ask", input, { text: "summary.md" })).toEqual({ ok: true, value: { text: "summary.md" } });
 
-    const withdrawn = kernel.start("ui_ask", input);
+    const withdrawn = kernel.submit("ui_ask", input);
     kernel.withdraw(lastPark().runId, "用户不回答");
     expect(await kernel.reap(withdrawn)).toMatchObject({ ok: false, by: "ui_ask", reason: "用户不回答" });
   });
@@ -56,7 +56,7 @@ describe("ui_approval", () => {
   test("先问人：选 yes 才执行；带补充说明时结果连同说明一起交回", async () => {
     const { kernel, deleted, lastPark, answer } = await setup();
 
-    const id = kernel.start("demo_delete", { path: "a.txt" });
+    const id = kernel.submit("demo_delete", { path: "a.txt" });
     expect(lastPark().payload).toEqual({ question: '允许执行 demo_delete？{"path":"a.txt"}', options: ["yes", "no"] });
     kernel.unpark(lastPark().runId, { option: "yes" });
     expect(await kernel.reap(id)).toEqual({ ok: true, value: 1 });
@@ -91,7 +91,7 @@ describe("ui_approval", () => {
 
   test("审批被撤回：拒绝，原因取撤回的原因", async () => {
     const { kernel, deleted, lastPark } = await setup();
-    const id = kernel.start("demo_delete", { path: "a.txt" });
+    const id = kernel.submit("demo_delete", { path: "a.txt" });
 
     kernel.withdraw(lastPark().runId, "用户不回答：不确定");
     expect(await kernel.reap(id)).toMatchObject({ ok: false, by: "ui_approval", reason: "用户不回答：不确定" });

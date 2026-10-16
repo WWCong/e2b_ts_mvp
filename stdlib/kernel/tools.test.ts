@@ -32,7 +32,7 @@ describe("ctx.tools()", () => {
         tools = ctx.tools();
       },
     });
-    await kernel.reap(kernel.start("demo_agent", null));
+    await kernel.reap(kernel.submit("demo_agent", null));
 
     // fs_secret 不公开，web_search 不在能力面
     expect(tools.map((t) => t.name)).toEqual(["fs_list", "fs_write"]);
@@ -61,7 +61,7 @@ describe("ctx.tools()", () => {
       },
     });
     kernel.register({ name: "demo_agent", input: z.null(), decorators: ["demo_peek"], impl: async () => null });
-    await kernel.reap(kernel.start("demo_agent", null));
+    await kernel.reap(kernel.submit("demo_agent", null));
 
     expect(hasTools).toBe(false);
   });

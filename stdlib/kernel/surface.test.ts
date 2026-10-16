@@ -25,7 +25,7 @@ describe("能力面检查", () => {
     kernel.register({ name: "fs_read", input: z.null(), impl: async () => "content" });
     kernel.register({ name: "web_search", input: z.null(), impl: async () => "results" });
     await kernel.boot();
-    const run = (name: string) => kernel.reap(kernel.start(name, null));
+    const run = (name: string) => kernel.reap(kernel.submit(name, null));
     return { kernel, events, run };
   }
 

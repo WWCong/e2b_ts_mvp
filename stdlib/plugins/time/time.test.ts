@@ -7,7 +7,7 @@ test("time_now：返回当前时间（毫秒）", async () => {
   await kernel.boot();
   const before = Date.now();
 
-  const result = await kernel.reap(kernel.start("time_now", null));
+  const result = await kernel.reap(kernel.submit("time_now", null));
   if (!result.ok) throw new Error(result.reason);
   expect(result.value).toBeGreaterThanOrEqual(before);
 });

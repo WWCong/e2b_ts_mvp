@@ -92,7 +92,7 @@ async function boot(journalDir: string, options: Options = {}) {
 describe("恢复", () => {
   test("已完成的调用回送记下的结果，不执行、不过链；park 用原 id 重新开出，回答后接着跑，日志删除", async () => {
     const one = await boot(dir);
-    const root = one.kernel.start("demo_flow", null);
+    const root = one.kernel.submit("demo_flow", null);
     await Bun.sleep(1);
     const parkId = one.parks()[0]!.runId;
 
@@ -117,7 +117,7 @@ describe("恢复", () => {
 
   test("崩溃时正在执行的 Run 用原 runId 重新执行，ctx.attempt 加一；再崩一次接着加", async () => {
     const one = await boot(dir);
-    const root = one.kernel.start("demo_mail", null);
+    const root = one.kernel.submit("demo_mail", null);
     await Bun.sleep(1);
 
     const twoDir = crash(dir);
@@ -139,7 +139,7 @@ describe("恢复", () => {
   test("不确定的值（时间）经 Operation 取：恢复重放时回送当初的结果，不再执行", async () => {
     let calls = 0;
     const one = await boot(dir, { clock: () => 1000 });
-    one.kernel.start("demo_clock", null);
+    one.kernel.submit("demo_clock", null);
     await Bun.sleep(1);
 
     const two = await boot(crash(dir), { clock: () => ++calls });
@@ -150,7 +150,7 @@ describe("恢复", () => {
 
   test("park 已回答、回答已落盘，还没交给父就崩了：恢复后直接拿到回答，不再问", async () => {
     const one = await boot(dir);
-    const root = one.kernel.start("demo_flow", null);
+    const root = one.kernel.submit("demo_flow", null);
     await Bun.sleep(1);
     one.kernel.unpark(one.parks()[0]!.runId, "no");
     const twoDir = crash(dir);
@@ -162,7 +162,7 @@ describe("恢复", () => {
 
   test("已完成的那一步比对不上（代码改了）：整棵树按 killed 处理，根拿到 diverged 的拒绝，日志移到 diverged/ 留着排查", async () => {
     const one = await boot(dir);
-    const root = one.kernel.start("demo_flow", null);
+    const root = one.kernel.submit("demo_flow", null);
     await Bun.sleep(1);
     const [otherTarget, otherInput] = [crash(dir), crash(dir)];
 
@@ -185,7 +185,7 @@ describe("恢复", () => {
 
   test("根都建不起来（Operation 没了）：恢复失败，日志移到 diverged/", async () => {
     const one = await boot(dir);
-    const root = one.kernel.start("demo_flow", null);
+    const root = one.kernel.submit("demo_flow", null);
     await Bun.sleep(1);
     const twoDir = crash(dir);
 
@@ -202,7 +202,7 @@ describe("恢复", () => {
 describe("恢复的事件", () => {
   test("tree.recovered：列出已完成的调用（带结果）与要重新执行的 Run；产物没变；每条事件带这次启动的 boot", async () => {
     const one = await boot(dir);
-    const root = one.kernel.start("demo_flow", null);
+    const root = one.kernel.submit("demo_flow", null);
     await Bun.sleep(1);
     const park = one.parks()[0]!.runId;
 
@@ -223,7 +223,7 @@ describe("恢复的事件", () => {
 
   test("装配的产物变了：artifactChanged 为 true，只提示，照常恢复", async () => {
     const one = await boot(dir);
-    const root = one.kernel.start("demo_flow", null);
+    const root = one.kernel.submit("demo_flow", null);
     await Bun.sleep(1);
 
     const two = assemble(crash(dir));
@@ -243,7 +243,7 @@ describe("关停后恢复", () => {
 
   test("优雅关停：正在执行的调用跑完再停，下一个停在边界上；重启后它不重做，停住的照常发起", async () => {
     const one = await boot(dir, { flow });
-    const root = one.kernel.start("demo_flow", null);
+    const root = one.kernel.submit("demo_flow", null);
     await one.kernel.stop(60_000);
     expect(one.impls).toEqual(["demo_flow", "demo_slow"]);
 
@@ -254,7 +254,7 @@ describe("关停后恢复", () => {
 
   test("stop(0) 强杀：等同崩溃，正在执行的调用重启后重新执行，attempt 为 2", async () => {
     const one = await boot(dir, { flow });
-    const root = one.kernel.start("demo_flow", null);
+    const root = one.kernel.submit("demo_flow", null);
     await one.kernel.stop(0);
 
     const two = await boot(dir, { flow });
@@ -273,7 +273,7 @@ describe("恢复：回放的顺序与走法", () => {
       return ctx.call("demo_park", ask(seen));
     };
     const one = await boot(dir, { flow });
-    const root = one.kernel.start("demo_flow", null);
+    const root = one.kernel.submit("demo_flow", null);
     await Bun.sleep(40);
     expect(one.parks()[0]!.payload).toEqual([1, 20]);
 
@@ -287,7 +287,7 @@ describe("恢复：回放的顺序与走法", () => {
 
   test("少走了：没走到的记录里有已完成的，判为对不上；只剩在途的，作废后照常结束", async () => {
     const one = await boot(dir);
-    const root = one.kernel.start("demo_flow", null);
+    const root = one.kernel.submit("demo_flow", null);
     await Bun.sleep(1);
     const [early, partial] = [crash(dir), crash(dir)];
 
@@ -304,7 +304,7 @@ describe("恢复：回放的顺序与走法", () => {
 
   test("在途的那一步换了调用：旧的作废，新调用照常执行；再崩一次时以覆盖后的记录为准", async () => {
     const one = await boot(dir);
-    const root = one.kernel.start("demo_flow", null);
+    const root = one.kernel.submit("demo_flow", null);
     await Bun.sleep(1);
 
     // 第 1 步崩溃前是在途的 demo_park，现在改调 demo_count
@@ -328,7 +328,7 @@ describe("恢复：回放的顺序与走法", () => {
 
   test("在途的那一步改成了 park：同样允许，照常开出", async () => {
     const one = await boot(dir);
-    const root = one.kernel.start("demo_flow", null);
+    const root = one.kernel.submit("demo_flow", null);
     await Bun.sleep(1);
 
     const two = await boot(crash(dir), { flow: async (ctx) => [await ctx.call("demo_count", 1), await ctx.park(ask("direct"))] });
@@ -368,7 +368,7 @@ test("嵌套：崩溃点所在路径上的 Run 重新执行，旁边已完成的
   }
 
   const one = await tree(dir);
-  const root = one.kernel.start("demo_s", null);
+  const root = one.kernel.submit("demo_s", null);
   await Bun.sleep(1);
   expect(one.ran).toEqual(["demo_s", "demo_op1", "demo_op11", "demo_op111", "demo_op12"]);
 

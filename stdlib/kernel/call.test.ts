@@ -10,7 +10,7 @@ async function setup(config: KernelConfig = {}) {
   kernel.events.subscribe((e) => events.push(e));
   kernel.register({ name: "math_double", input: z.number(), impl: async (_ctx, n: number) => n * 2 });
   await kernel.boot();
-  const run = (name: string, input: unknown) => kernel.reap(kernel.start(name, input));
+  const run = (name: string, input: unknown) => kernel.reap(kernel.submit(name, input));
   const started = () => events.filter((e) => e.type === "run.started");
   return { kernel, events, run, started };
 }

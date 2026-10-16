@@ -25,7 +25,7 @@ async function setup(defaultDecorators: string[], decorators: Record<string, Dec
     },
   });
   await kernel.boot();
-  const call = (input: unknown) => kernel.reap(kernel.start("echo_say", input));
+  const call = (input: unknown) => kernel.reap(kernel.submit("echo_say", input));
   const decoratorEvents = () => events.filter((e) => e.type.startsWith("decorator."));
   return { call, events, decoratorEvents, echo };
 }
@@ -135,6 +135,6 @@ describe("装饰器链", () => {
     const late = new Kernel();
     await late.boot();
     late.register({ name: "echo_say", input: z.any(), decorators: ["ghost"], impl: async (_ctx, x) => x });
-    expect(() => late.start("echo_say", {})).toThrow("unknown decorator: ghost");
+    expect(() => late.submit("echo_say", {})).toThrow("unknown decorator: ghost");
   });
 });

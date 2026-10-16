@@ -54,7 +54,7 @@ async function setup(config: KernelConfig = {}) {
 describe("park 与 unpark", () => {
   test("park：Run 转 waiting，发 park.opened；unpark 送值后转回 running，值作为结果交给调用方", async () => {
     const { kernel, events, runs, opened, parkId } = await setup();
-    const root = kernel.start("demo_ask", "删除 a.txt？");
+    const root = kernel.submit("demo_ask", "删除 a.txt？");
 
     expect(opened()).toEqual([
       expect.objectContaining({ runId: parkId(), schema: YES_NO, payload: { question: "删除 a.txt？" } }),
@@ -79,7 +79,7 @@ describe("park 与 unpark", () => {
 
   test("值不符合 schema：unpark 抛异常，park 照旧等待；改对了再送", async () => {
     const { kernel, runs, parkId } = await setup();
-    const root = kernel.start("demo_ask", "?");
+    const root = kernel.submit("demo_ask", "?");
 
     expect(() => kernel.unpark(parkId(), "yes")).toThrow(`invalid value for park ${parkId()}`);
     expect(runs.get("demo_park")!.status).toBe("waiting");
@@ -89,7 +89,7 @@ describe("park 与 unpark", () => {
 
   test("撤回：park 以拒绝结果返回，by 为挂起的那个 Operation", async () => {
     const { kernel, events, parkId } = await setup();
-    const root = kernel.start("demo_ask", "?");
+    const root = kernel.submit("demo_ask", "?");
     const withdrawn: Rejected = { ok: false, by: "demo_park", reason: "用户没回答", retryable: false };
 
     kernel.withdraw(parkId(), "用户没回答");
@@ -99,7 +99,7 @@ describe("park 与 unpark", () => {
 
   test("不在等待的 Run：unpark 与撤回都抛异常", async () => {
     const { kernel, parkId } = await setup();
-    const root = kernel.start("demo_ask", "?");
+    const root = kernel.submit("demo_ask", "?");
 
     expect(() => kernel.unpark(root, true)).toThrow(`not parked: ${root}`);
     kernel.unpark(parkId(), true);
@@ -115,7 +115,7 @@ describe("park 与 unpark", () => {
       input: z.null(),
       impl: (ctx) => Promise.all([ctx.call("demo_ask", "a"), ctx.call("demo_ask", "b")]),
     });
-    const root = kernel.start("demo_both", null);
+    const root = kernel.submit("demo_both", null);
 
     expect(opened().map((e) => e.payload)).toEqual([{ question: "a" }, { question: "b" }]);
     kernel.unpark(parkId(1), false);
@@ -132,7 +132,7 @@ describe("park 与 unpark", () => {
       impl: (ctx) => ctx.call("demo_park", { schema: { type: "nope" }, payload: null }),
     });
 
-    const result = await kernel.reap(kernel.start("demo_bad", null));
+    const result = await kernel.reap(kernel.submit("demo_bad", null));
     expect(result).toMatchObject({ ok: true, value: { ok: false, by: "demo_park" } });
     expect(opened()).toEqual([]);
   });
@@ -147,7 +147,7 @@ describe("park 与 unpark", () => {
         return "done";
       },
     });
-    const root = kernel.start("demo_forget", null);
+    const root = kernel.submit("demo_forget", null);
 
     await Bun.sleep(1);
     expect(events.some((e) => e.type === "run.exited")).toBe(false);
@@ -162,7 +162,7 @@ describe("park 与 unpark", () => {
       input: z.null(),
       impl: (ctx) => Promise.all([1, 2].map((payload) => ctx.park({ schema: YES_NO, payload }))),
     });
-    const root = kernel.start("demo_twice", null);
+    const root = kernel.submit("demo_twice", null);
 
     kernel.unpark(parkId(), true);
     expect(await kernel.reap(root)).toMatchObject({ ok: false, by: "demo_twice", reason: `run ${root} is already parked` });
@@ -172,7 +172,7 @@ describe("park 与 unpark", () => {
 describe("park 与取消、关停", () => {
   test("取消等待中的树：park 转 killed 并发 park.closed，收割得到内核的拒绝", async () => {
     const { kernel, events, parkId } = await setup();
-    const root = kernel.start("demo_ask", "?");
+    const root = kernel.submit("demo_ask", "?");
     const id = parkId();
 
     kernel.cancel(root);
@@ -189,7 +189,7 @@ describe("park 与取消、关停", () => {
 
   test("关停：只剩 park 在等的树不必等到超时，直接按 shutdown 杀掉，但 park 不关", async () => {
     const { kernel, events } = await setup();
-    const root = kernel.start("demo_ask", "?");
+    const root = kernel.submit("demo_ask", "?");
 
     await kernel.stop(60_000);
     expect(await kernel.reap(root)).toMatchObject({ ok: false, by: "kernel", reason: "shutdown" });
@@ -208,7 +208,7 @@ describe("park 与取消、关停", () => {
         await ctx.park({ schema: YES_NO, payload: null }).catch((err) => (late = err));
       },
     });
-    const id = kernel.start("demo_stubborn", null);
+    const id = kernel.submit("demo_stubborn", null);
 
     kernel.cancel(id);
     gate.resolve();
@@ -232,11 +232,11 @@ describe("装饰器与 park", () => {
     });
     kernel.register({ name: "demo_delete", input: z.null(), decorators: ["test_approval"], impl: async () => "deleted" });
 
-    const yes = kernel.start("demo_delete", null);
+    const yes = kernel.submit("demo_delete", null);
     kernel.unpark(parkId(0), true);
     expect(await kernel.reap(yes)).toEqual({ ok: true, value: "deleted" });
 
-    const no = kernel.start("demo_delete", null);
+    const no = kernel.submit("demo_delete", null);
     kernel.unpark(parkId(1), false);
     expect(await kernel.reap(no)).toMatchObject({ ok: false, by: "test_approval", reason: "not approved" });
   });
@@ -244,7 +244,7 @@ describe("装饰器与 park", () => {
   test("无人值守：默认装饰器把 park 短路成拒绝，不再等待", async () => {
     const { kernel, opened } = await setup({ defaultDecorators: ["test_unattended"] });
 
-    expect(await kernel.reap(kernel.start("demo_ask", "?"))).toEqual({ ok: true, value: UNATTENDED });
+    expect(await kernel.reap(kernel.submit("demo_ask", "?"))).toEqual({ ok: true, value: UNATTENDED });
     expect(opened()).toEqual([]);
   });
 });

@@ -21,8 +21,8 @@ beforeAll(async () => {
   const kernel = new Kernel();
   await loadPlugin(kernel, import.meta.dir, { model: `${faux.provider.id}/${faux.getModel().id}` });
   await kernel.boot();
-  run = (input) => kernel.reap(kernel.start("model_complete", input));
-  compact = (input) => kernel.reap(kernel.start("model_compact", input));
+  run = (input) => kernel.reap(kernel.submit("model_complete", input));
+  compact = (input) => kernel.reap(kernel.submit("model_compact", input));
 });
 
 beforeEach(() => {

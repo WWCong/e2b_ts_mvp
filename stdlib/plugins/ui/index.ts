@@ -1,7 +1,7 @@
 /**
  * ui 插件：给人看的问题（3.5）。约定经 harness_park 挂起时 payload 为 Question、回答为 Answer，
- * 入口程序认得这个格式，在终端里问人，把回答 unpark 回来（app/mvp/prompt.ts）。
- * 方案里 ask 属于 script 包 agent-ui，approval 是单独的装饰器；MVP 里都写在这个原生插件里。
+ * 入口认得这个格式，问人，把回答 unpark 回来（终端见 stdlib/entries/console）。
+ * 方案里 ask 属于 script 包 agent-ui，approval 是单独的装饰器；这里都写在这个原生插件里。
  */
 
 import { z } from "zod";

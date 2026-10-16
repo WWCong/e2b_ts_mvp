@@ -52,7 +52,7 @@ describe("装上插件", () => {
     });
     await kernel.boot();
 
-    expect(await kernel.reap(kernel.start("demo_echo", "hi"))).toEqual({ ok: true, value: "hi!" });
+    expect(await kernel.reap(kernel.submit("demo_echo", "hi"))).toEqual({ ok: true, value: "hi!" });
   });
 
   test("挂点方法名拼错了、键名不合命名规则、包重复：装上时就报错", () => {
@@ -74,7 +74,7 @@ describe("启动", () => {
     const one = new Kernel({ journalDir: dir });
     one.use("demo", demo());
     await one.boot();
-    const root = one.start("demo_wait", null);
+    const root = one.submit("demo_wait", null);
 
     const kernel = new Kernel({ journalDir: dir });
     const order: string[] = [];
@@ -97,7 +97,7 @@ describe("启动", () => {
     const kernel = new Kernel();
     kernel.use("demo", demo());
 
-    expect(() => kernel.start("demo_gate", null)).toThrow("harness is assembling");
+    expect(() => kernel.submit("demo_gate", null)).toThrow("harness is assembling");
     await kernel.boot();
     expect(() => kernel.use("late", {})).toThrow("cannot use late: harness is running");
     await expect(kernel.boot()).rejects.toThrow("harness is running");
@@ -116,7 +116,7 @@ describe("启动", () => {
 
     await expect(kernel.boot()).rejects.toThrow("broken.onStart failed: no disk");
     expect(started).toEqual([]);
-    expect(() => kernel.start("demo_gate", null)).toThrow("harness is booting");
+    expect(() => kernel.submit("demo_gate", null)).toThrow("harness is booting");
   });
 });
 
@@ -134,7 +134,7 @@ describe("通知类挂点", () => {
     kernel.use("log", { afterAny: (e) => void all.push(e) });
     await kernel.boot();
 
-    const root = kernel.start("demo_wait", null);
+    const root = kernel.submit("demo_wait", null);
     kernel.unpark(root, true);
     await kernel.reap(root);
     expect(seen).toEqual(["start demo_wait", "park boolean", "exit demo_wait true"]);
@@ -160,7 +160,7 @@ describe("通知类挂点", () => {
     kernel.use("ok", { afterRunExit: (e) => void exits.push(e.runId) });
     await kernel.boot();
 
-    const root = kernel.start("demo_gate", null);
+    const root = kernel.submit("demo_gate", null);
     expect(await kernel.reap(root)).toEqual({ ok: true, value: "open" });
     await Bun.sleep(1);
     expect(exits).toEqual([root]);
@@ -193,7 +193,7 @@ describe("关停", () => {
       },
     });
     await kernel.boot();
-    kernel.start("demo_gate", null);
+    kernel.submit("demo_gate", null);
 
     await Promise.all([kernel.stop(60_000), kernel.stop(0)]);
     expect(order).toEqual(["killed shutdown", "slow.onStop", "demo.onStop"]);
@@ -254,14 +254,14 @@ describe("依赖与先后", () => {
     });
     await kernel.boot();
 
-    const gate = kernel.start("demo_wait", null);
+    const gate = kernel.submit("demo_wait", null);
     kernel.unpark(gate, true);
     await kernel.reap(gate);
     expect(calls).toEqual(["policy before demo_wait", "audit before", "audit after", "policy after"]);
 
     // 第一个拦下的生效：排在前面的 policy 拦下了，audit 不再被问
     calls.length = 0;
-    expect(() => kernel.start("demo_gate", null)).toThrow("rejected by policy: no");
+    expect(() => kernel.submit("demo_gate", null)).toThrow("rejected by policy: no");
     expect(calls).toEqual(["policy before demo_gate"]);
   });
 
@@ -293,6 +293,6 @@ describe("依赖与先后", () => {
     declared.use("guard", guard);
     declared.use("app", app(["guard"]));
     await declared.boot();
-    expect(await declared.reap(declared.start("app_run", null))).toEqual({ ok: true, value: "ok" });
+    expect(await declared.reap(declared.submit("app_run", null))).toEqual({ ok: true, value: "ok" });
   });
 });

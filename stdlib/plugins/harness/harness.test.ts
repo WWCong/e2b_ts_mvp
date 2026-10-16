@@ -14,7 +14,7 @@ test("harness_park：挂起调用方的子 Run，unpark 送来的值作为结果
     impl: (ctx) => Promise.all([0, 1].map(() => ctx.call("harness_park", { schema, payload: null }))),
   });
   await kernel.boot();
-  const root = kernel.start("demo_ask", null);
+  const root = kernel.submit("demo_ask", null);
 
   kernel.unpark(opened[0]!, "yes");
   kernel.withdraw(opened[1]!, "timeout");

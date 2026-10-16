@@ -51,7 +51,7 @@ async function setup(policy: PluginObject, journalDir?: string) {
   });
   kernel.use("policy", policy);
   const roots = await kernel.boot();
-  const run = (name: string, input: unknown) => kernel.reap(kernel.start(name, input));
+  const run = (name: string, input: unknown) => kernel.reap(kernel.submit(name, input));
   return { kernel, events, ran, roots, run };
 }
 
@@ -81,7 +81,7 @@ describe("beforeRunStart", () => {
   test("拦下外部调用：start 抛异常，什么也不发", async () => {
     const { kernel, events } = await setup({ beforeRunStart: (e) => (e.depth === 0 ? { veto: "下班了" } : undefined) });
 
-    expect(() => kernel.start("demo_echo", "x")).toThrow("rejected by policy: 下班了");
+    expect(() => kernel.submit("demo_echo", "x")).toThrow("rejected by policy: 下班了");
     expect(events).toEqual([]);
   });
 
@@ -94,7 +94,7 @@ describe("beforeRunStart", () => {
     kernel.use("third", { beforeRunStart: () => void asked.push("third") });
     await kernel.boot();
 
-    expect(() => kernel.start("demo_echo", "x")).toThrow("rejected by second: no");
+    expect(() => kernel.submit("demo_echo", "x")).toThrow("rejected by second: no");
     expect(asked).toEqual(["first", "second"]);
   });
 
@@ -112,7 +112,7 @@ describe("beforeRunStart", () => {
 
     const policy = { beforeRunStart: async () => {} } as unknown as PluginObject;
     const async = await setup(policy);
-    expect(() => async.kernel.start("demo_echo", "x")).toThrow("rejected by policy: beforeRunStart must be synchronous");
+    expect(() => async.kernel.submit("demo_echo", "x")).toThrow("rejected by policy: beforeRunStart must be synchronous");
   });
 });
 
@@ -137,7 +137,7 @@ describe("beforeRunExit / beforeParkOpen / beforeParkClose", () => {
   test("beforeParkClose 拦下：unpark 与撤回抛异常，park 照旧等待；放行后照常送值", async () => {
     let allow = false;
     const { kernel } = await setup({ beforeParkClose: () => (allow ? undefined : { veto: "还不能答" }) });
-    const root = kernel.start("demo_wait", null);
+    const root = kernel.submit("demo_wait", null);
 
     expect(() => kernel.unpark(root, true)).toThrow(`park ${root} close rejected by policy: 还不能答`);
     expect(() => kernel.withdraw(root, "算了")).toThrow("还不能答");
@@ -157,7 +157,7 @@ describe("拦下与恢复", () => {
 
   test("被拦下的结果照常记进日志；恢复时原样回送，不再问挂点", async () => {
     const one = await setup({ beforeRunStart: (e) => (e.input === "b" ? { veto: "不许 b" } : undefined) }, dir);
-    const root = one.kernel.start("demo_flow", null);
+    const root = one.kernel.submit("demo_flow", null);
     await Bun.sleep(5);
 
     // 恢复时挂点已不再拦，也不该再被问到已完成的那两步
@@ -176,7 +176,7 @@ describe("拦下与恢复", () => {
 
   test("beforeTreeRecover 拦下：这棵树不恢复，以 run.killed 结束，日志移到 diverged/", async () => {
     const one = await setup({}, dir);
-    const root = one.kernel.start("demo_wait", null);
+    const root = one.kernel.submit("demo_wait", null);
     const twoDir = crash();
 
     const two = await setup({ beforeTreeRecover: (e) => (e.runId === root ? { veto: "太旧了" } : undefined) }, twoDir);

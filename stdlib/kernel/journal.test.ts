@@ -70,7 +70,7 @@ describe("写前日志", () => {
         return ctx.call("demo_park", ask(question));
       },
     });
-    const root = kernel.start("demo_flow", "删除 a.txt？");
+    const root = kernel.submit("demo_flow", "删除 a.txt？");
     await Bun.sleep(1);
 
     const child = expect.any(String);
@@ -102,7 +102,7 @@ describe("写前日志", () => {
   test("先记后做：park 的值落盘后才关 park，子 Run 的结果落盘后才交给父；树结束删日志", async () => {
     const { kernel, events, file, lines, parkIds } = await setup();
     kernel.register({ name: "demo_ask", input: z.null(), impl: (ctx) => ctx.call("demo_park", ask("?")) });
-    const root = kernel.start("demo_ask", null);
+    const root = kernel.submit("demo_ask", null);
     const park = parkIds()[0]!;
     // 事件发出时读日志，看此刻落盘了什么
     const lastLineAt: Record<string, Entry | undefined> = {};
@@ -139,7 +139,7 @@ describe("写前日志", () => {
     const seen: [string, Entry["type"] | undefined][] = [];
     kernel.events.subscribe((e) => seen.push([e.type, last()?.type]));
 
-    const root = kernel.start("demo_mixed", null);
+    const root = kernel.submit("demo_mixed", null);
     await Bun.sleep(1);
     const park = events.find((e) => e.type === "park.opened")!.runId;
     kernel.unpark(park, true);
@@ -161,7 +161,7 @@ describe("写前日志", () => {
 
   test("完成顺序：同一个 Run 的 done 行按完成的先后排", async () => {
     const { kernel, lines, parkIds } = await setup();
-    const root = kernel.start("demo_both", null);
+    const root = kernel.submit("demo_both", null);
     const [a, b] = parkIds() as [string, string];
 
     kernel.unpark(b, true);
@@ -176,7 +176,7 @@ describe("写前日志", () => {
 
   test("取消其中一支：父的 done 记下取消的拒绝；取消整棵树：删日志", async () => {
     const { kernel, file, lines, parkIds } = await setup();
-    const root = kernel.start("demo_both", null);
+    const root = kernel.submit("demo_both", null);
 
     kernel.cancel(parkIds()[0]!);
     expect(lines(root).at(-1)).toEqual({ type: "done", runId: root, seq: 0, result: cancelled });
@@ -186,7 +186,7 @@ describe("写前日志", () => {
 
   test("关停：日志保留，停在被杀之前，不记关停造成的结果", async () => {
     const { kernel, lines } = await setup();
-    const root = kernel.start("demo_both", null);
+    const root = kernel.submit("demo_both", null);
 
     await kernel.stop(5);
     expect(lines(root).map((l) => l.type)).toEqual(["root", "call", "call"]);

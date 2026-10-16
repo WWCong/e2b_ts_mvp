@@ -24,6 +24,8 @@ export function op<S extends z.ZodType, O>(decl: {
   usage?: string;
   /** 公开的才会作为工具交给模型；缺省不公开 */
   public?: boolean;
+  /** 能从 Harness 外面经入口（终端、HTTP 等）调；缺省不能。插件只能声明自己的 Operation */
+  api?: boolean;
   /** 自选装饰器，按书写顺序从外到内 */
   decorators?: string[];
   /** 能力面收窄：项是 Operation 名或包名，先 only 再 exclude；都不写即全开 */
@@ -74,7 +76,7 @@ export type Veto = { veto: string; retryable?: boolean };
  * 恢复重放时回送的结果不再过这些挂点，被拦下的结果也照常记进日志、重放时原样回送。
  */
 export const BEFORE = {
-  /** 一个 Run 将要开始（含恢复时重新执行的）。拦下：子调用以拒绝返回、不建子 Run；外部调用 start 抛异常 */
+  /** 一个 Run 将要开始（含恢复时重新执行的）。拦下：子调用以拒绝返回、不建子 Run；外部调用 submit 抛异常 */
   beforeRunStart: "run.started",
   /** 一个 Run 将要退出。拦下：结果换成拒绝 */
   beforeRunExit: "run.exited",

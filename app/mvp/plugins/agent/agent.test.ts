@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { Kernel, loadPlugin, type HarnessEvent } from "stdlib";
 import { models } from "../model/models";
-import type { Answer } from "../ui";
+import type { Answer } from "stdlib/plugins/ui";
 
 const faux = fauxProvider();
 let kernel: Kernel;
@@ -53,8 +53,8 @@ async function boot(journalDir?: string, agent: { compactOver?: number } = {}) {
     model: { model: `${faux.provider.id}/${faux.getModel().id}` },
     agent,
   };
-  for (const pkg of ["harness", "time"]) await loadPlugin(k, `stdlib/plugins/${pkg}`);
-  for (const pkg of ["fs", "model", "ui", "agent"]) await loadPlugin(k, join(import.meta.dir, "..", pkg), config[pkg]);
+  for (const pkg of ["harness", "time", "ui"]) await loadPlugin(k, `stdlib/plugins/${pkg}`);
+  for (const pkg of ["fs", "model", "agent"]) await loadPlugin(k, join(import.meta.dir, "..", pkg), config[pkg]);
   const roots = await k.boot();
   return { kernel: k, events: log, roots };
 }
@@ -68,7 +68,7 @@ const step =
     return fauxAssistantMessage(content, toolUse ? { stopReason: "toolUse" } : undefined);
   };
 
-const assist = (prompt: string, history: Message[] = []) => kernel.reap(kernel.start("agent_assist", { prompt, history }));
+const assist = (prompt: string, history: Message[] = []) => kernel.reap(kernel.submit("agent_assist", { prompt, history }));
 
 /** 某次请求里发给模型的对话消息（去掉系统消息） */
 const messagesIn = (i: number) => requests[i]!.messages.filter((m): m is Message => m.role !== "system");
@@ -215,10 +215,10 @@ describe("多轮对话", () => {
       step(fauxText("好的，用 md")),
     ]);
     const one = await boot(dir);
-    const first = await one.kernel.reap(one.kernel.start("agent_assist", { prompt: "你好" }));
+    const first = await one.kernel.reap(one.kernel.submit("agent_assist", { prompt: "你好" }));
     if (!first.ok) throw new Error(first.reason);
     const history = (first.value as Turn).history;
-    const root = one.kernel.start("agent_assist", { prompt: "写个笔记", history });
+    const root = one.kernel.submit("agent_assist", { prompt: "写个笔记", history });
     await Bun.sleep(5);
 
     const copy = `${dir}-crash`;
@@ -275,7 +275,7 @@ describe("崩溃恢复", () => {
       step(fauxText("好的，用 txt")),
     ]);
     const one = await boot(dir);
-    const root = one.kernel.start("agent_assist", { prompt: "写个笔记" });
+    const root = one.kernel.submit("agent_assist", { prompt: "写个笔记" });
     await Bun.sleep(5);
     expect(opened(one.events)).toHaveLength(1);
 
