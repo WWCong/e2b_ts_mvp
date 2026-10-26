@@ -1,30 +1,24 @@
 /**
  * chat 插件：一段连续的对话。对外（api）提供 chat_say、chat_reset、chat_greet，由入口（如终端）把人说的话交进来。
- * 对话历史存在配置的文件里：每轮读出历史交给 agent_assist，拿回更新后的历史再存。
+ * 对话历史存在插件自己的存储里（注入的 store，在持久状态里属于 chat 的那一块）：
+ * 每轮读出历史交给 agent_assist，拿回更新后的历史再存。
  * 读与存都是子调用，一轮的三步都记在写前日志里：存完根 Run 才退出、日志才删。中途崩溃或停下，
  * 重启后接着做：已完成的步骤回放，没存的照常存，做完的一轮不会丢。失败的一轮不存，历史不变，这句话可以再说一遍。
  * 同一时间只该有一轮：两轮同时进行会争同一份历史（后续：按会话分开存）。
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { z } from "zod";
 import { op, plugin } from "stdlib";
 
 const none = z.object({});
+const FILE = "conversation.json";
 
-/** file：对话历史存在哪，放在工作区之外，模型的工具碰不到 */
-export default plugin((config: { file: string }) => {
-  const read = (): Message[] =>
-    existsSync(config.file) ? (JSON.parse(readFileSync(config.file, "utf8")) as { history: Message[] }).history : [];
-
-  /** 先写临时文件再改名：写到一半崩溃也不会留下半截的对话 */
-  const write = (history: Message[]) => {
-    mkdirSync(dirname(config.file), { recursive: true });
-    writeFileSync(`${config.file}.tmp`, JSON.stringify({ history }));
-    renameSync(`${config.file}.tmp`, config.file);
-  };
+export default plugin({ needs: ["store"] }, (_config, { store }) => {
+  const read = async (): Promise<Message[]> =>
+    (await store.stat(FILE)) ? (JSON.parse(new TextDecoder().decode(await store.read(FILE))) as { history: Message[] }).history : [];
+  /** 整个替换：写到一半崩溃也不会留下半截的对话 */
+  const write = (history: Message[]) => store.write(FILE, JSON.stringify({ history }));
 
   return {
     requires: ["agent"],
@@ -54,7 +48,7 @@ export default plugin((config: { file: string }) => {
         input: none,
         output: z.string(),
         impl: async (): Promise<string> => {
-          write([]);
+          await write([]);
           return "已开始新对话";
         },
       }),
@@ -66,7 +60,7 @@ export default plugin((config: { file: string }) => {
         input: none,
         output: z.string(),
         impl: async (): Promise<string> => {
-          const count = read().length;
+          const count = (await read()).length;
           return count > 0 ? `接着之前的对话（${count} 条消息）；/new 开始新对话` : "";
         },
       }),

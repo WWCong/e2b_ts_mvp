@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { cpSync } from "node:fs";
 import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,8 +13,9 @@ import {
   type ToolResultMessage,
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
-import { Kernel, loadPlugin, type HarnessEvent } from "stdlib";
-import { models } from "../model/models";
+import { Kernel, loadPlugin, type HarnessEvent, type Infra } from "stdlib";
+import { piLlm } from "stdlib/infra/llm";
+import { localDir } from "stdlib/infra/volume";
 import type { Answer } from "stdlib/plugins/ui";
 
 const faux = fauxProvider();
@@ -26,10 +27,6 @@ let requests: TranscriptContext[];
 /** 人依次给出的回答：每开一个 park 取一个 */
 let answers: Answer[];
 
-beforeAll(() => {
-  models.setProvider(faux.provider);
-});
-
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "agent-"));
   requests = [];
@@ -38,7 +35,7 @@ beforeEach(async () => {
 });
 
 /**
- * 与入口相同的装配：fs 的工作区是 workspace，model 用 faux 模型；agent 是 agent 插件的配置。
+ * 与入口相同的装配：基建的工作区是 workspace，模型后端用 faux 模型；agent 是 agent 插件的配置。
  * 每开一个 park，人从 answers 里取一个回答；没有了就不答，park 一直等着
  */
 async function boot(journalDir?: string, agent: { compactOver?: number } = {}) {
@@ -48,13 +45,14 @@ async function boot(journalDir?: string, agent: { compactOver?: number } = {}) {
   k.events.subscribe((e) => {
     if (e.type === "park.opened" && answers.length > 0) queueMicrotask(() => k.unpark(e.runId, answers.shift()));
   });
-  const config: Record<string, unknown> = {
-    fs: { workspace },
-    model: { model: `${faux.provider.id}/${faux.getModel().id}` },
-    agent,
+  const infra: Infra = {
+    llm: piLlm({ model: `${faux.provider.id}/${faux.getModel().id}`, providers: [faux.provider] }),
+    workspace: localDir(workspace),
   };
+  await infra.workspace!.open();
   for (const pkg of ["harness", "time", "ui"]) await loadPlugin(k, `stdlib/plugins/${pkg}`);
-  for (const pkg of ["fs", "model", "agent"]) await loadPlugin(k, join(import.meta.dir, "..", pkg), config[pkg]);
+  for (const pkg of ["fs", "model"]) await loadPlugin(k, join(import.meta.dir, "..", pkg), {}, infra);
+  await loadPlugin(k, join(import.meta.dir, "..", "agent"), agent);
   const roots = await k.boot();
   return { kernel: k, events: log, roots };
 }

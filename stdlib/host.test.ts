@@ -42,12 +42,12 @@ describe("宿主", () => {
     await one.until("parked");
     one.proc.kill("SIGINT");
     expect(await one.exited()).toEqual({ code: 0, out: "serving, recovered 0\nparked\nstopped\n" });
-    expect(await readdir(dir)).toHaveLength(1);
+    expect(await readdir(join(dir, "journal"))).toHaveLength(1);
 
     // 恢复的树重新开出 park；入口不收割就结束服务，宿主关停，日志照旧保留
     const two = await launch("leave").exited();
     expect(two).toEqual({ code: 0, out: "parked\nserving, recovered 1\nstopped\n" });
-    expect(await readdir(dir)).toHaveLength(1);
+    expect(await readdir(join(dir, "journal"))).toHaveLength(1);
   });
 
   test("关停中再收到一次信号就强杀，不等在途的调用", async () => {

@@ -1,6 +1,6 @@
 /**
- * model 插件：原语 model.complete 与 model.compact，经 pi-ai 调模型（8.1、8.3）。
- * 模型取配置 model（「provider/模型 id」，缺省 deepseek/deepseek-flash）。
+ * model 插件：原语 model.complete 与 model.compact（8.1、8.3）。调模型经注入的基建 llm（模型后端）：
+ * 用哪家、哪个模型、凭据都在装配配置里，这里只管拼请求、处理工具与压缩历史。消息格式用 pi-ai 的。
  * Operation 名本身就合模型对工具名的要求（names.ts），工具名、历史与事件处处同名，不做任何转写。
  * 后续加入：把 usage 记到 Run 上；渲染 run.context；公开给 script 包。
  */
@@ -9,7 +9,6 @@ import type { Message, Tool, ToolCall, UserMessage } from "@earendil-works/pi-ai
 import { z } from "zod";
 import { op, plugin, type ToolSpec } from "stdlib";
 import { estimateTokens, splitAt, transcript, withSummary } from "./compact";
-import { findModel, models } from "./models";
 
 const SUMMARIZE =
   "你负责压缩对话历史。把给你的对话记录写成一份摘要：之后的对话只看得到这份摘要和最近几轮。" +
@@ -22,10 +21,7 @@ const toolSpec = z.object({
   inputSchema: z.record(z.string(), z.unknown()),
 });
 
-export default plugin((config: { model?: string }) => {
-  // 装载时就找好模型：配错了装配即失败
-  const model = findModel(config.model ?? "deepseek/deepseek-flash");
-
+export default plugin({ needs: ["llm"] }, (_config, { llm }) => {
   return {
     operations: {
       complete: op({
@@ -37,8 +33,7 @@ export default plugin((config: { model?: string }) => {
           tools: z.array(toolSpec).default([]),
         }),
         impl: async (ctx, input) => {
-          const reply = await models.complete(
-            model,
+          const reply = await llm.complete(
             { systemPrompt: input.systemPrompt, messages: input.messages, tools: input.tools.map(toTool) },
             { signal: ctx.signal },
           );
@@ -71,8 +66,7 @@ export default plugin((config: { model?: string }) => {
           const at = estimateTokens(history) > over ? splitAt(history, keep) : 0;
           if (at === 0) return { history, compacted: false };
 
-          const reply = await models.complete(
-            model,
+          const reply = await llm.complete(
             {
               systemPrompt: SUMMARIZE,
               messages: [{ role: "user", content: transcript(history.slice(0, at)), timestamp: history[at]!.timestamp }],

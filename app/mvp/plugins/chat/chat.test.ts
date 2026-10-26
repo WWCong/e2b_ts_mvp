@@ -5,13 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { Kernel, loadPlugin, op, type HarnessEvent } from "stdlib";
+import { localDir } from "stdlib/infra/volume";
 
 let dir: string;
 let file: string;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "chat-"));
-  file = join(dir, "state", "conversation.json");
+  // 持久状态的根是 dir/state；chat 拿到的是其中属于它的一块
+  file = join(dir, "state", "store", "chat", "conversation.json");
 });
 
 /**
@@ -37,7 +39,7 @@ async function setup(journalDir?: string) {
       }),
     },
   });
-  await loadPlugin(kernel, import.meta.dir, { file });
+  await loadPlugin(kernel, import.meta.dir, {}, { state: localDir(join(dir, "state")) });
   const roots = await kernel.boot();
   const run = (name: string, input: unknown) => kernel.reap(kernel.submit(name, input));
   const saved = () => (existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as { history: unknown[] }).history : undefined);

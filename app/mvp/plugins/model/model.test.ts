@@ -9,7 +9,7 @@ import {
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { Kernel, loadPlugin, type ToolSpec } from "stdlib";
-import { models } from "./models";
+import { piLlm } from "stdlib/infra/llm";
 
 const faux = fauxProvider();
 let sent: TranscriptContext | undefined;
@@ -17,9 +17,9 @@ let run: (input: unknown) => ReturnType<Kernel["reap"]>;
 let compact: (input: unknown) => ReturnType<Kernel["reap"]>;
 
 beforeAll(async () => {
-  models.setProvider(faux.provider);
   const kernel = new Kernel();
-  await loadPlugin(kernel, import.meta.dir, { model: `${faux.provider.id}/${faux.getModel().id}` });
+  const llm = piLlm({ model: `${faux.provider.id}/${faux.getModel().id}`, providers: [faux.provider] });
+  await loadPlugin(kernel, import.meta.dir, {}, { llm });
   await kernel.boot();
   run = (input) => kernel.reap(kernel.submit("model_complete", input));
   compact = (input) => kernel.reap(kernel.submit("model_compact", input));
@@ -94,8 +94,8 @@ describe("model_complete", () => {
     });
   });
 
-  test("配置的模型不存在：装载失败", async () => {
-    await expect(loadPlugin(new Kernel(), import.meta.dir, { model: "nope/x" })).rejects.toThrow("unknown model: nope/x");
+  test("装配没提供模型后端：装载失败", async () => {
+    await expect(loadPlugin(new Kernel(), import.meta.dir)).rejects.toThrow("model needs llm, which the assembly does not provide");
   });
 });
 

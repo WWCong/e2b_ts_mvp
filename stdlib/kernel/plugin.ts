@@ -5,6 +5,7 @@
  */
 
 import type { z } from "zod";
+import type { Granted, Need } from "../infra";
 import type { Decorator, DecoratorDef, OnError } from "./chain";
 import type { EventBody, HarnessEvent } from "./events";
 import type { Operation } from "./kernel";
@@ -146,12 +147,27 @@ export const PLUGIN_KEYS: ReadonlySet<string> = new Set([
   ...Object.keys(BEFORE),
 ]);
 
-/** P：工厂返回的插件对象的具体类型，注册表据它推出各 Operation 的类型 */
-export type PluginDecl<C, P extends PluginObject = PluginObject> = { kind: "plugin"; factory: (config: C) => P };
+/** P：工厂返回的插件对象的具体类型，注册表据它推出各 Operation 的类型；needs：要注入的基建 */
+export type PluginDecl<C, P extends PluginObject = PluginObject> = {
+  kind: "plugin";
+  needs: readonly Need[];
+  factory: (config: C, infra: Partial<Granted>) => P;
+};
 
-/** 声明插件：factory 以装配配置调用一次，返回插件对象 */
-export function plugin<C = Record<string, never>, P extends PluginObject = PluginObject>(
-  factory: (config: C) => P,
-): PluginDecl<C, P> {
-  return { kind: "plugin", factory };
+/**
+ * 声明插件：factory 以装配配置调用一次，返回插件对象。
+ * 要用基建的写 plugin({ needs: ["llm"] }, (config, { llm }) => …)：装载时把装配提供的注入进来，
+ * 装配没提供就装载失败。基建见 stdlib/infra：llm、workspace、store（插件自己的一块持久存储）
+ */
+export function plugin<C = Record<string, never>, P extends PluginObject = PluginObject>(factory: (config: C) => P): PluginDecl<C, P>;
+export function plugin<N extends Need, C = Record<string, never>, P extends PluginObject = PluginObject>(
+  options: { needs: readonly N[] },
+  factory: (config: C, infra: Pick<Granted, N>) => P,
+): PluginDecl<C, P>;
+export function plugin(
+  first: { needs: readonly Need[] } | ((config: unknown) => PluginObject),
+  factory?: (config: unknown, infra: never) => PluginObject,
+): PluginDecl<unknown> {
+  if (typeof first === "function") return { kind: "plugin", needs: [], factory: first };
+  return { kind: "plugin", needs: first.needs, factory: factory as PluginDecl<unknown>["factory"] };
 }

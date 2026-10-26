@@ -1,20 +1,28 @@
 /**
- * 宿主：一个进程里跑一个 Harness。只有它握着内核：建内核、按顺序装载插件、启动（恢复上次没做完的树），
- * 再按装配配置 serve 打开对外的服务接口（stdlib/serve），每个服务接口只提供它 expose 里列的 Operation。
+ * 宿主：一个进程里跑一个 Harness。只有它握着内核。装配配置分四块，对应四层：
+ * infra（基建：Harness 外面给的能力）、plugins（领域：插件）、应用层的编排（现在也写成插件，以后是 script 包）、
+ * serve（接口：哪些 Operation 怎么对外）。
+ * 启动：先占住服务接口要监听的地址，打开基建（建目录、挂载…），建内核（写前日志在 state 的 journal/），
+ * 按顺序装载插件、注入它们声明需要的基建，启动（恢复上次没做完的树），最后服务接口开始监听，
+ * 每个服务接口只提供它 expose 里列的 Operation。
  * 启停是机器的信号，只在这里处理：收到 SIGINT / SIGTERM 就优雅关停——先停止接新请求，再等在途的调用跑完
- * （最多 graceMs），关停中再收到一次就强杀，内核关停完断开连接、退出进程。进度都在写前日志里，再启动接着做。
+ * （最多 graceMs），关停中再收到一次就强杀，内核关停完断开连接、关掉基建（落盘、卸载…），退出进程。进度都在写前日志里，再启动接着做。
  * 装了入口（entry()，只剩终端，改成客户端后去掉）时，入口都结束服务也关停。
  * 后续加入：约定一个退出码表示要重启（harness_restart），由外层重新拉起进程。
  */
 
+import { journalDir, type Infra } from "./infra";
+import type { Volume } from "./infra/volume";
 import { Kernel, type KernelConfig } from "./kernel/kernel";
 import { loadPlugin } from "./kernel/loader";
 import type { ApiName } from "./kernel/ops";
 import { httpService, type HttpConfig } from "./serve/http";
 import type { Service } from "./serve/service";
 
-/** 装配配置（附 A）：内核的配置，加上装哪些插件、开哪些服务接口 */
-export type Assembly = KernelConfig & {
+/** 装配配置（附 A）：内核的配置，加上基建、装哪些插件、开哪些服务接口。写前日志的位置由基建的 state 决定 */
+export type Assembly = Omit<KernelConfig, "journalDir"> & {
+  /** 基建：Harness 外面给的能力（stdlib/infra）。插件只拿得到它声明需要、这里又给了的 */
+  infra?: Infra;
   /** 能力：按顺序装载（同级插件按这个顺序排先后），插件包目录，或 [目录, 配置] */
   plugins: (string | [dir: string, config: unknown])[];
   /**
@@ -27,16 +35,19 @@ export type Assembly = KernelConfig & {
 };
 
 export async function host(assembly: Assembly): Promise<never> {
-  const { plugins, serve = {}, graceMs = 10_000, ...config } = assembly;
+  const { plugins, infra = {}, serve = {}, graceMs = 10_000, ...config } = assembly;
   // 先占住服务接口要监听的地址：被占了（同一个状态目录已有 Harness 在跑）就不往下启动，不碰日志
   const services: Service[] = [];
   if (serve.http) services.push(await httpService(serve.http));
 
-  const kernel = new Kernel(config);
+  const volumes = [infra.workspace, infra.state].filter((v): v is Volume => v !== undefined);
+  for (const volume of volumes) await volume.open();
+
+  const kernel = new Kernel({ ...config, journalDir: journalDir(infra.state) });
   const serves: (() => Promise<void>)[] = [];
   for (const item of plugins) {
     const [dir, pluginConfig] = typeof item === "string" ? [item, undefined] : item;
-    const serve = await loadPlugin(kernel, dir, pluginConfig);
+    const serve = await loadPlugin(kernel, dir, pluginConfig, infra);
     if (serve) serves.push(serve);
   }
   // 对外哪些是装配的决定：列的不是 api 的，启动失败
@@ -73,6 +84,7 @@ export async function host(assembly: Assembly): Promise<never> {
   await halted.promise;
   await stopped;
   for (const service of services) service.stop(true);
+  for (const volume of volumes.reverse()) await volume.close();
   // 模型客户端等可能还留着连接，显式退出
   process.exit(code);
 }
