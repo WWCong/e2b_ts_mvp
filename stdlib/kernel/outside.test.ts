@@ -29,12 +29,13 @@ async function setup(config: KernelConfig = {}) {
         api: true,
         usage: "问一句",
         input: z.object({ q: z.string(), loud: z.boolean().default(false) }),
+        output: z.string(),
         impl: async (ctx, { q }) => {
           await ctx.call("demo_inner", null);
           return ctx.park({ schema: z.toJSONSchema(z.string()), payload: q });
         },
       }),
-      once: op({ api: true, input: z.object({}), impl: async () => `第 ${++runs} 次` }),
+      once: op({ api: true, usage: "数一次", input: z.object({}), output: z.string(), impl: async () => `第 ${++runs} 次` }),
       inner: op({ input: z.null(), impl: async () => "inner" }),
     },
   });
@@ -69,13 +70,14 @@ describe("对外接口", () => {
     ]);
   });
 
-  test("operations：声明了 api 的，带说明与入参的 JSON Schema（调用方要填的形状）", async () => {
+  test("operations：声明了 api 的，带说明、入参（调用方要填的形状）与出参的 JSON Schema", async () => {
     const { outside } = await setup();
 
     expect(outside.operations().map((o) => o.name)).toEqual(["demo_ask", "demo_once"]);
     const ask = outside.operations()[0]!;
     expect(ask.usage).toBe("问一句");
     expect(ask.input).toMatchObject({ type: "object", required: ["q"], properties: { q: { type: "string" } } });
+    expect(ask.output).toMatchObject({ type: "string" });
   });
 
   test("runs 列出结果还没被取走的树；parks 列出等待中的 park，带所在的树、schema 与 payload", async () => {
@@ -166,5 +168,34 @@ describe("结果留到被取走", () => {
     expect(two.roots).toEqual([]);
     expect(two.events).toEqual([expect.objectContaining({ type: "run.reaped", runId: root, operation: "demo_once", expired: true })]);
     expect(existsSync(file(root))).toBe(false);
+  });
+});
+
+describe("对外的契约", () => {
+  test("api 的 Operation 必须写 usage 与 output，注册时就报错", () => {
+    const kernel = new Kernel();
+    expect(() => kernel.use("bad", { operations: { a: op({ api: true, input: z.object({}), output: z.string(), impl: async () => "" }) } })).toThrow(
+      "api operation needs usage: bad_a",
+    );
+    expect(() => kernel.use("worse", { operations: { a: op({ api: true, usage: "u", input: z.object({}), impl: async () => "" }) } })).toThrow(
+      "api operation needs output: worse_a",
+    );
+  });
+
+  test("写了 output 的，返回前按它校验：对不上算这个 Operation 失败；对得上交出解析后的值", async () => {
+    const kernel = new Kernel();
+    kernel.use("demo", {
+      operations: {
+        wrong: op({ input: z.null(), output: z.string(), impl: async () => 42 as unknown as string }),
+        strip: op({ input: z.null(), output: z.object({ a: z.number() }), impl: async () => ({ a: 1, extra: true }) }),
+      },
+    });
+    await kernel.boot();
+
+    const wrong = await kernel.reap(kernel.submit("demo_wrong", null));
+    const reason = wrong.ok ? "" : wrong.reason;
+    expect(wrong).toMatchObject({ ok: false, by: "demo_wrong" });
+    expect(reason).toStartWith("invalid output:");
+    expect(await kernel.reap(kernel.submit("demo_strip", null))).toEqual({ ok: true, value: { a: 1 } });
   });
 });

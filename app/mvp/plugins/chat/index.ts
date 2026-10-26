@@ -32,7 +32,9 @@ export default plugin((config: { file: string }) => {
       /** 说一句：连同历史交给 agent，存下更新后的历史，返回回答 */
       say: op({
         api: true,
+        usage: "说一句话，返回回答。对话历史在服务端保存，下一句接着这段对话",
         input: z.object({ text: z.string() }),
+        output: z.string(),
         only: ["chat", "agent"],
         impl: async (ctx, { text }): Promise<string> => {
           const history = await ctx.ops.chat.load({});
@@ -48,7 +50,9 @@ export default plugin((config: { file: string }) => {
       /** 开始新对话：清空历史 */
       reset: op({
         api: true,
+        usage: "开始新对话：清空对话历史，返回一句提示",
         input: none,
+        output: z.string(),
         impl: async (): Promise<string> => {
           write([]);
           return "已开始新对话";
@@ -58,7 +62,9 @@ export default plugin((config: { file: string }) => {
       /** 开场白：有之前的对话时说一声 */
       greet: op({
         api: true,
+        usage: "开场白：有之前的对话时返回一句提示（几条消息），没有时返回空文字",
         input: none,
+        output: z.string(),
         impl: async (): Promise<string> => {
           const count = read().length;
           return count > 0 ? `接着之前的对话（${count} 条消息）；/new 开始新对话` : "";

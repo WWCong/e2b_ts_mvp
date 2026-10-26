@@ -30,8 +30,10 @@ export type Operation = Surface & {
   usage?: string;
   /** 公开的才会作为工具交给模型（7.2）；缺省不公开 */
   public?: boolean;
-  /** 能从 Harness 外面调：入口（终端、HTTP 等，entry.ts）只能调声明了它的；缺省不能 */
+  /** 能对外：服务接口只能把声明了它的列进 expose；缺省不能。api 的必须写 usage 与 output */
   api?: boolean;
+  /** 出参契约：写了就在返回前按它校验，调用方拿到解析后的值 */
+  output?: z.ZodType;
   /** 入参契约：建 Run 前按它校验，实现拿到解析后的值；也是交给模型的工具 schema（z.toJSONSchema） */
   input: z.ZodType;
   impl: OperationImpl;
@@ -164,7 +166,7 @@ export class Kernel {
     this.plugins.set(pkg, plugin);
   }
 
-  /** 名字须合命名规则；公开的 Operation 须写 usage；公开或 api 的入参 schema 转不成 JSON Schema 的（如 z.date()）在这里就报错 */
+  /** 名字须合命名规则；公开与 api 的 Operation 须写 usage，api 的还须写 output；它们的 schema 转不成 JSON Schema 的（如 z.date()）在这里就报错 */
   register(op: Operation): void {
     checkName(op.name);
     if (this.operations.has(op.name)) throw new Error(`duplicate operation: ${op.name}`);
@@ -175,7 +177,10 @@ export class Kernel {
       this.tools.set(op.name, { name: op.name, description: op.usage, inputSchema });
     }
     if (op.api) {
-      this.apis.set(op.name, { name: op.name, usage: op.usage, input: z.toJSONSchema(op.input, { io: "input" }) as Record<string, unknown> });
+      if (!op.usage) throw new Error(`api operation needs usage: ${op.name}`);
+      if (!op.output) throw new Error(`api operation needs output: ${op.name}`);
+      const schema = (type: z.ZodType, io: "input" | "output") => z.toJSONSchema(type, { io }) as Record<string, unknown>;
+      this.apis.set(op.name, { name: op.name, usage: op.usage, input: schema(op.input, "input"), output: schema(op.output, "output") });
     }
     this.operations.set(op.name, op);
     this.artifactDigest = undefined;
@@ -307,8 +312,13 @@ export class Kernel {
       parks: () => this.parks(),
       unpark: (id, value) => this.unpark(id, value),
       withdraw: (id, reason) => this.withdraw(id, reason),
-      operations: () => [...this.apis.values()],
+      operations: () => this.operationsApi(),
     };
+  }
+
+  /** 能对外的 Operation（声明了 api 的），按名字排序 */
+  operationsApi(): ApiInfo[] {
+    return [...this.apis.values()].sort((a, b) => (a.name < b.name ? -1 : 1));
   }
 
   private launch(name: string, input: unknown, origin?: string): string {
@@ -829,7 +839,12 @@ export class Kernel {
     // 装饰器还没走到实现时 Run 就被杀了：不再开始执行实现（结果本就作废）
     if (run.status === "killed") return reject("kernel", "killed");
     try {
-      return { ok: true, value: await op.impl(ctx, run.input) };
+      const value = await op.impl(ctx, run.input);
+      if (!op.output) return { ok: true, value };
+      // 出参对不上契约：算这个 Operation 的失败
+      const parsed = op.output.safeParse(value);
+      if (!parsed.success) return reject(run.operation, `invalid output:\n${z.prettifyError(parsed.error)}`);
+      return { ok: true, value: parsed.data };
     } catch (err) {
       return reject(run.operation, err);
     }

@@ -5,6 +5,12 @@ import { op, plugin } from "../../../kernel/plugin";
 
 export default plugin(() => ({
   operations: {
-    say: op({ api: true, input: z.object({ text: z.string() }), impl: async (_ctx, { text }) => `echo: ${text}` }),
+    say: op({
+      api: true,
+      usage: "回显",
+      input: z.object({ text: z.string() }),
+      output: z.string(),
+      impl: async (_ctx, { text }) => `echo: ${text}`,
+    }),
   },
 }));

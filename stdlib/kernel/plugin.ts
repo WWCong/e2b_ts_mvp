@@ -17,24 +17,33 @@ export type OpDecl<I = any, O = any> = Omit<Operation, "name" | "input" | "impl"
 };
 export type DecoratorDecl = Omit<DecoratorDef, "id">;
 
-/** 声明一个 Operation；impl 的 input 类型由 input schema 推出，返回值的类型即调用方拿到的结果 */
-export function op<S extends z.ZodType, O>(decl: {
+/**
+ * 声明一个 Operation；impl 的 input 类型由 input schema 推出，返回值的类型即调用方拿到的结果。
+ * A：是否 api，留在类型里，装配配置的 expose 据它检查（ops.ts 的 ApiName）
+ */
+export function op<S extends z.ZodType, O, A extends boolean = false>(decl: {
   input: S;
+  /** 出参 schema：写了就在返回前按它校验；api 的必须写（对外的契约） */
+  output?: z.ZodType<O>;
   /** 用法说明；公开的 Operation 必须写，交给模型时即工具的 description */
   usage?: string;
   /** 公开的才会作为工具交给模型；缺省不公开 */
   public?: boolean;
-  /** 能从 Harness 外面经入口（终端、HTTP 等）调；缺省不能。插件只能声明自己的 Operation */
-  api?: boolean;
+  /**
+   * 能对外：可以列进服务接口的 expose（装配配置）。插件只能声明自己的 Operation；
+   * 对不对外由装配决定。api 的必须写 usage 与 output
+   */
+  api?: A;
   /** 自选装饰器，按书写顺序从外到内 */
   decorators?: string[];
   /** 能力面收窄：项是 Operation 名或包名，先 only 再 exclude；都不写即全开 */
   only?: string[];
   exclude?: string[];
   impl: (ctx: Ctx, input: z.output<S>) => Promise<O>;
-}): OpDecl<z.input<S>, O> {
-  // S 的入参类型即 z.input<S>，泛型下 TS 推不出这层关系
-  return decl as OpDecl<z.input<S>, O>;
+}): OpDecl<z.input<S>, O> & { api: NoInfer<A> } {
+  // S 的入参类型即 z.input<S>，泛型下 TS 推不出这层关系。
+  // A 只从 decl 推：写在插件对象里时，上下文的类型（api?: boolean）会把它放宽成 boolean
+  return decl as OpDecl<z.input<S>, O> & { api: A };
 }
 
 /** 声明一个装饰器；onError 缺省 closed（管控类出错必须中断） */

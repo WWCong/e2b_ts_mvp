@@ -16,7 +16,7 @@ afterEach(() => {
   for (const service of services.splice(0)) service.stop(true);
 });
 
-/** demo_ask 问一句（park）；demo_echo 回显；demo_fail 失败；demo_secret 没声明 api */
+/** demo_ask 问一句（park）；demo_echo 回显；demo_fail 失败——这三个对外。demo_hidden 声明了 api 但没列进 expose；demo_secret 没声明 api */
 async function setup(socket?: string) {
   socket ??= join(await mkdtemp(join(tmpdir(), "http-")), "h.sock");
   const kernel = new Kernel();
@@ -26,20 +26,24 @@ async function setup(socket?: string) {
         api: true,
         usage: "问一句",
         input: z.object({ q: z.string() }),
+        output: z.string(),
         impl: (ctx, { q }) => ctx.park({ schema: z.toJSONSchema(z.string()), payload: q }),
       }),
-      echo: op({ api: true, input: z.object({ text: z.string() }), impl: async (_ctx, { text }) => `echo: ${text}` }),
+      echo: op({ api: true, usage: "回显", input: z.object({ text: z.string() }), output: z.string(), impl: async (_ctx, { text }) => `echo: ${text}` }),
       fail: op({
         api: true,
+        usage: "总是失败",
         input: z.object({}),
+        output: z.string(),
         impl: async () => {
           throw new Error("坏了");
         },
       }),
+      hidden: op({ api: true, usage: "没对外", input: z.object({}), output: z.string(), impl: async () => "hidden" }),
       secret: op({ input: z.object({}), impl: async () => "secret" }),
     },
   });
-  const service = await httpService({ socket });
+  const service = await httpService({ socket, expose: ["demo_ask", "demo_echo", "demo_fail"] });
   services.push(service);
   await kernel.boot();
   service.listen({ outside: (origin) => kernel.outside(origin), subscribe: (fn) => kernel.events.subscribe(fn) });
@@ -64,15 +68,15 @@ async function setup(socket?: string) {
 }
 
 describe("HTTP 服务接口", () => {
-  test("GET /operations：只列声明了 api 的，带说明与入参的 JSON Schema", async () => {
+  test("GET /operations：只列 expose 里的，带说明、入参与出参的 JSON Schema", async () => {
     const { get } = await setup();
     const operations = (await get("/operations")) as { name: string; usage?: string; input: unknown }[];
 
     expect(operations.map((o) => o.name)).toEqual(["demo_ask", "demo_echo", "demo_fail"]);
-    expect(operations[0]).toMatchObject({ usage: "问一句", input: { type: "object", required: ["q"] } });
+    expect(operations[0]).toMatchObject({ usage: "问一句", input: { type: "object", required: ["q"] }, output: { type: "string" } });
   });
 
-  test("调用：等到结束返回 { runId, result } 并取走；被拒也是 200；请求不成立是 400，没有的是 404", async () => {
+  test("调用：等到结束返回 { runId, result } 并取走；被拒也是 200；请求不成立是 400，没对外的与没有的是 404", async () => {
     const { request, get } = await setup();
 
     const echo = await request("POST", "/operations/demo_echo", { text: "hi" });
@@ -82,8 +86,11 @@ describe("HTTP 服务接口", () => {
     const fail = await request("POST", "/operations/demo_fail");
     expect([fail.status, await fail.json()]).toMatchObject([200, { result: { ok: false, by: "demo_fail", reason: "坏了" } }]);
 
+    for (const name of ["demo_hidden", "demo_secret", "demo_nope"]) {
+      const res = await request("POST", `/operations/${name}`, {});
+      expect([res.status, await res.json()]).toEqual([404, { error: `not exposed: ${name}` }]);
+    }
     for (const [path, body, error] of [
-      ["/operations/demo_secret", {}, "not an api operation: demo_secret"],
       ["/operations/demo_echo", {}, "invalid input for demo_echo"],
       ["/operations/demo_echo", "{", "request body is not valid JSON"],
     ] as const) {
@@ -159,7 +166,7 @@ describe("HTTP 服务接口", () => {
 
   test("socket 已有活着的服务：报错，不去动它；上次留下的死 socket 文件删掉再监听；关停完删掉 socket 文件", async () => {
     const { socket, service } = await setup();
-    expect(httpService({ socket })).rejects.toThrow(`a harness is already serving on ${socket}`);
+    expect(httpService({ socket, expose: [] })).rejects.toThrow(`a harness is already serving on ${socket}`);
 
     service.stop(true);
     expect(existsSync(socket)).toBe(false);

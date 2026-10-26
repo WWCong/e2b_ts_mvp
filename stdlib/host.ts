@@ -1,6 +1,6 @@
 /**
  * 宿主：一个进程里跑一个 Harness。只有它握着内核：建内核、按顺序装载插件、启动（恢复上次没做完的树），
- * 再按装配配置 serve 打开对外的服务接口（stdlib/serve）。
+ * 再按装配配置 serve 打开对外的服务接口（stdlib/serve），每个服务接口只提供它 expose 里列的 Operation。
  * 启停是机器的信号，只在这里处理：收到 SIGINT / SIGTERM 就优雅关停——先停止接新请求，再等在途的调用跑完
  * （最多 graceMs），关停中再收到一次就强杀，内核关停完断开连接、退出进程。进度都在写前日志里，再启动接着做。
  * 装了入口（entry()，只剩终端，改成客户端后去掉）时，入口都结束服务也关停。
@@ -9,6 +9,7 @@
 
 import { Kernel, type KernelConfig } from "./kernel/kernel";
 import { loadPlugin } from "./kernel/loader";
+import type { ApiName } from "./kernel/ops";
 import { httpService, type HttpConfig } from "./serve/http";
 import type { Service } from "./serve/service";
 
@@ -16,8 +17,11 @@ import type { Service } from "./serve/service";
 export type Assembly = KernelConfig & {
   /** 能力：按顺序装载（同级插件按这个顺序排先后），插件包目录，或 [目录, 配置] */
   plugins: (string | [dir: string, config: unknown])[];
-  /** 对外的服务接口：开哪些、各自监听在哪 */
-  serve?: { http?: HttpConfig };
+  /**
+   * 对外的服务接口：开哪些、各自监听在哪、对外哪些 Operation（expose）。
+   * expose 只能填声明了 api 的（注册表推出，写错类型检查即报错；启动前再查一遍），不在里面的不对外
+   */
+  serve?: { http?: Omit<HttpConfig, "expose"> & { expose: ApiName[] } };
   /** 优雅关停时最多等在途的调用多久，缺省 10 秒 */
   graceMs?: number;
 };
@@ -34,6 +38,11 @@ export async function host(assembly: Assembly): Promise<never> {
     const [dir, pluginConfig] = typeof item === "string" ? [item, undefined] : item;
     const serve = await loadPlugin(kernel, dir, pluginConfig);
     if (serve) serves.push(serve);
+  }
+  // 对外哪些是装配的决定：列的不是 api 的，启动失败
+  const apis = new Set(kernel.operationsApi().map((o) => o.name));
+  for (const [name, config] of Object.entries(serve)) {
+    for (const op of config.expose) if (!apis.has(op)) throw new Error(`serve.${name} exposes ${op}, which is not an api operation`);
   }
   await kernel.boot();
   for (const service of services) {

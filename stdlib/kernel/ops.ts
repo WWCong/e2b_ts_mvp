@@ -29,6 +29,13 @@ type DeclOf<N> = N extends `${infer P}_${infer K}`
     : never
   : never;
 
+/** 注册表里声明了 api 的 Operation 的名字（包名_键名）：装配配置里服务接口的 expose 只能填它们 */
+export type ApiName = {
+  [P in Pkg]: {
+    [K in keyof OperationsOf<Packages[P]> & string]: OperationsOf<Packages[P]>[K] extends { api: true } ? `${P}_${K}` : never;
+  }[keyof OperationsOf<Packages[P]> & string];
+}[Pkg];
+
 /**
  * ctx.call：名字在注册表里时，入参按它检查、结果带它的类型；
  * 不在的（名字是变量，如模型挑的工具；或测试里临时注册的）入参与结果都是 unknown，不报错。

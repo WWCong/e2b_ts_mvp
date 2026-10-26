@@ -79,4 +79,12 @@ describe("宿主", () => {
     expect((await app.exited()).code).toBe(0);
     expect(existsSync(socket)).toBe(false);
   });
+
+  test("expose 列了不是 api 的 Operation：启动失败，不开服务", async () => {
+    const socket = join(dir, "h.sock");
+    const app = launch("badexpose", socket);
+    expect((await app.exited()).code).not.toBe(0);
+    expect(await app.stderr()).toContain("serve.http exposes echo_nope, which is not an api operation");
+    expect(existsSync(socket)).toBe(false);
+  });
 });

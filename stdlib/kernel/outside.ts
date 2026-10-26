@@ -12,8 +12,8 @@ export type RunInfo = { runId: string; operation: string; origin?: string; done:
 /** 等待中的 park：id 是 park 的 runId（unpark 用它），root 是所在树的根；schema 是等的值的 JSON Schema */
 export type ParkInfo = { id: string; root: string; operation: string; schema: Record<string, unknown>; payload: unknown };
 
-/** 能从外面调的 Operation：名字、说明与入参的 JSON Schema（调用方要填的形状） */
-export type ApiInfo = { name: string; usage?: string; input: Record<string, unknown> };
+/** 能对外的 Operation：名字、说明、入参（调用方要填的形状）与出参的 JSON Schema */
+export type ApiInfo = { name: string; usage: string; input: Record<string, unknown>; output: Record<string, unknown> };
 
 export type Outside = {
   /** 按名字起一棵 Run 树，返回根的 runId；只能调声明了 api 的 Operation */
@@ -32,6 +32,6 @@ export type Outside = {
   unpark(id: string, value: unknown): void;
   /** 撤回等待中的 park，它以拒绝返回 */
   withdraw(id: string, reason: string): void;
-  /** 能从外面调的 Operation */
+  /** 能对外的 Operation（声明了 api 的）；服务接口再按装配配置的 expose 筛 */
   operations(): ApiInfo[];
 };

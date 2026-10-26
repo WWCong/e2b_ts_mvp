@@ -3,7 +3,7 @@
  * @ts-expect-error 那一行若不再报错，tsc 反过来报错。
  */
 
-import { plugin, type Ctx, type Result } from "stdlib";
+import { plugin, type ApiName, type Ctx, type Result } from "stdlib";
 
 export async function check(ctx: Ctx) {
   // 入参按 schema 检查，带默认值的字段可不填；结果带实现返回值的类型
@@ -30,6 +30,13 @@ export async function check(ctx: Ctx) {
   // @ts-expect-error 结果类型不符
   if (read.ok) read.value satisfies number;
 }
+
+// 装配配置的 expose 只能填声明了 api 的 Operation
+export const exposed: ApiName[] = ["chat_say", "chat_reset", "chat_greet"];
+// @ts-expect-error chat_load 没声明 api，不能对外
+export const internal: ApiName = "chat_load";
+// @ts-expect-error 拼错的名字
+export const typo: ApiName = "chat_sya";
 
 // plugin() 记下插件对象的具体类型之后，挂点方法的参数照样按事件类型推出
 plugin(() => ({ afterRunExit: (e) => void (e.result satisfies Result) }));

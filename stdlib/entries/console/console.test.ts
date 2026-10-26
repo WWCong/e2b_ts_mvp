@@ -29,7 +29,9 @@ async function setup(lines: string[], options: { journalDir?: string; end?: bool
     operations: {
       say: op({
         api: true,
+        usage: "说一句",
         input: z.object({ text: z.string() }),
+        output: z.string(),
         impl: async (ctx, { text }) => {
           if (text === "坏") throw new Error("坏了");
           if (text !== "问我") return `echo: ${text}`;
@@ -38,8 +40,8 @@ async function setup(lines: string[], options: { journalDir?: string; end?: bool
           return `选了 ${r.value.option}`;
         },
       }),
-      reset: op({ api: true, input: z.object({}), impl: async () => "清空了" }),
-      greet: op({ api: true, input: z.object({}), impl: async () => "你好" }),
+      reset: op({ api: true, usage: "清空", input: z.object({}), output: z.string(), impl: async () => "清空了" }),
+      greet: op({ api: true, usage: "开场", input: z.object({}), output: z.string(), impl: async () => "你好" }),
       secret: op({ input: z.object({ text: z.string() }), impl: async () => "不该被调到" }),
     },
   });

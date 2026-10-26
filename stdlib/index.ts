@@ -12,6 +12,6 @@ export { decorator, op, plugin, type OpDecl, type PluginObject } from "./kernel/
 export { Kernel, type KernelConfig } from "./kernel/kernel";
 export { loadPlugin } from "./kernel/loader";
 export { host, type Assembly } from "./host";
-export type { Packages } from "./kernel/ops";
+export type { ApiName, Packages } from "./kernel/ops";
 export type { Ctx, Rejected, Result, ToolSpec } from "./kernel/run";
 export type { HarnessEvent } from "./kernel/events";

@@ -9,8 +9,14 @@ import { op } from "../../../kernel/plugin";
 
 export default entry((config: { mode: "leave" | "park" | "busy" }, outside) => ({
   operations: {
-    wait: op({ api: true, input: z.null(), impl: (ctx) => ctx.park({ schema: z.toJSONSchema(z.string()), payload: "等" }) }),
-    busy: op({ api: true, input: z.null(), impl: () => new Promise(() => console.log("busy")) }),
+    wait: op({
+      api: true,
+      usage: "停在 park 上",
+      input: z.null(),
+      output: z.unknown(),
+      impl: (ctx) => ctx.park({ schema: z.toJSONSchema(z.string()), payload: "等" }),
+    }),
+    busy: op({ api: true, usage: "一直在执行", input: z.null(), output: z.unknown(), impl: () => new Promise(() => console.log("busy")) }),
   },
   afterParkOpen() {
     console.log("parked");
