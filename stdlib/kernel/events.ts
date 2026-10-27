@@ -17,7 +17,7 @@ export type EventBody =
   /**
    * input：调用方给的入参，原样（实现拿到的是按 schema 解析后的）；chain：这个 Run 的装饰器链序，从外到内；
    * step：它是父的第几步，即日志的序号（根 Run 没有）；attempt：崩溃恢复后重新执行时才有，第几次执行；
-   * artifact：根 Run 才有，装配的产物摘要；origin：根 Run 才有，发起这棵树的入口（包名），宿主直接 submit 的没有
+   * artifact：根 Run 才有，装配的产物摘要；origin：根 Run 才有，这棵树是谁发起的（服务接口给的，如 http:console），宿主直接 submit 的没有
    */
   | {
       type: "run.started";
@@ -42,7 +42,7 @@ export type EventBody =
   /** 不再等待：unpark 送来了值、被撤回，或 Run 被取消；关停不算（见 Kernel.stop）。step 是这个 Run 的第几步，result 是 park 这次的产出 */
   | { type: "park.closed"; runId: string; step: number; result: Result }
   /**
-   * 从写前日志恢复了一棵树，runId 与 operation 是根的，origin 是发起它的入口。replayed：日志里已完成的调用与 park（带结果），重放时不再发事件，
+   * 从写前日志恢复了一棵树，runId 与 operation 是根的，origin 是谁发起的。replayed：日志里已完成的调用与 park（带结果），重放时不再发事件，
    * 崩溃前没来得及发的 run.exited、park.closed 据此补齐；inflight：崩溃时正在执行、要重新执行的 Run（含根）；
    * artifactChanged：装配的产物与写日志时不同，只提示，逐个调用比对兜底
    */

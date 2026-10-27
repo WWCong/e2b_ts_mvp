@@ -1,7 +1,7 @@
 /**
  * 内核：注册表、插件与生命周期、Run 的创建与执行、挂起，对外的调用、收割、送值与撤回、取消、关停接口。
  * 内核不注册任何 Operation，注册表里的全部来自装载的插件；park 的 Operation 形式是 harness 插件的 harness_park。
- * 握着内核的只有宿主（host.ts）与测试；入口拿到的是收窄了的对外接口（outside），普通插件什么也拿不到。
+ * 握着内核的只有宿主（host.ts）与测试；服务接口拿到的是收窄了的对外接口（outside），插件什么也拿不到。
  */
 
 import { z } from "zod";
@@ -67,7 +67,7 @@ type Resume = { runId: string; attempt: number; logs: Map<string, RunLog> };
 
 /**
  * 通过检查、待执行的 Run；raw 是调用方给的原样入参（进 run.started、日志比对用它）；恢复时重新执行的带着树的日志记录；
- * origin：根 Run 才有，发起这棵树的入口
+ * origin：根 Run 才有，这棵树是谁发起的（服务接口给的，如 http:console）
  */
 type Admitted = { run: Run; op: Operation; chain: DecoratorDef[]; raw: unknown; logs?: Map<string, RunLog>; origin?: string };
 
@@ -128,8 +128,6 @@ export class Kernel {
   private readonly journal?: Journal;
   /** 产物摘要的缓存；注册了新的 Operation 或装饰器就作废 */
   private artifactDigest?: string;
-  /** 启动时恢复的树：根的 runId 与发起它的入口，入口经 outside().recovered() 认领自己的 */
-  private recoveredRoots: { runId: string; origin?: string }[] = [];
   /** 结果还没被取走的树的根：与 exits 同进同出 */
   private readonly roots = new Map<string, { operation: string; origin?: string }>();
   /** 关停时被杀的根：结果是关停造成的，取走它不算取走（日志留着，重启后接着做） */
@@ -197,7 +195,7 @@ export class Kernel {
    * 对外接口·启动：装配完后调一次。先排好插件的先后（缺依赖、有环、装饰器引用不对都启动失败），接上挂点；
    * 再按依赖的先后逐个 await 插件的 onStart，有一个抛异常就启动失败；
    * 然后开始接受调用，从写前日志恢复没结束的树，最后通知各插件 afterStart。返回恢复的树的根 runId，供收割
-   * （入口经 outside().recovered() 认领自己发起的那些）。
+   * （客户端经服务接口的 runs 按 origin 认出自己发起的那些）。
    * 先恢复再接受外部调用：boot 之前 submit 的树会被恢复时再执行一遍，所以 submit 必须在 boot 之后。
    */
   async boot(): Promise<string[]> {
@@ -215,8 +213,7 @@ export class Kernel {
       }
     }
     this.phase = "running";
-    this.recoveredRoots = this.recover();
-    const roots = this.recoveredRoots.map((r) => r.runId);
+    const roots = this.recover();
     for (const pkg of this.sorted) {
       const plugin = this.plugins.get(pkg)!;
       if (plugin.afterStart) notify(`${pkg}.afterStart`, () => plugin.afterStart!());
@@ -289,15 +286,15 @@ export class Kernel {
 
   /**
    * 对外接口·调用：按名字起一棵 Run 树，返回根 Run 的 runId，结果用 reap 取。
-   * 宿主与测试直接调，什么都能调；入口经 outside() 调，只能调 api 的
+   * 宿主与测试直接调，什么都能调；服务接口经 outside() 调，只能调 api 的
    */
   submit(name: string, input: unknown): string {
     return this.launch(name, input);
   }
 
   /**
-   * 交给服务接口与入口的对外接口（outside.ts）：调用只能调声明了 api 的 Operation，发起的树的根记下 origin，
-   * 写进日志、重启后还在；recovered 只列 origin 是它的恢复出来的树。其余同宿主
+   * 交给服务接口的对外接口（outside.ts）：调用只能调声明了 api 的 Operation，发起的树的根记下 origin，
+   * 写进日志、重启后还在。其余同宿主
    */
   outside(origin: string): Outside {
     return {
@@ -305,7 +302,6 @@ export class Kernel {
         if (this.operations.get(name)?.api !== true) throw new Error(`not an api operation: ${name}`);
         return this.launch(name, input, origin);
       },
-      recovered: () => this.recoveredRoots.filter((r) => r.origin === origin).map((r) => r.runId),
       runs: () => this.runs(),
       wait: (runId) => this.wait(runId),
       reap: (runId) => this.reap(runId),
@@ -340,7 +336,7 @@ export class Kernel {
    * 根与崩溃时正在执行的 Run 用原 runId 重新执行，attempt 加一。重新执行时按序号回放：
    * 已完成的调用回送记下的结果（不执行、不过链），已回答的 park 直接拿到回答，没回答的用原 id 重新开出。
    */
-  private recover(): { runId: string; origin?: string }[] {
+  private recover(): string[] {
     if (!this.journal) return [];
     const ttl = this.config.resultTtlMs ?? RESULT_TTL_MS;
     return this.journal.readAll().flatMap((entries) => {
@@ -353,7 +349,7 @@ export class Kernel {
       this.roots.set(runId, { operation, origin });
       if (exit) {
         this.exits.set(runId, Promise.resolve(exit.result));
-        return [{ runId, origin }];
+        return [runId];
       }
       const logs = [...runs];
       const tree: BeforeEvent<"beforeTreeRecover"> = {
@@ -387,7 +383,7 @@ export class Kernel {
       } else {
         this.exits.set(root.runId, this.execute(admitted));
       }
-      return [{ runId, origin }];
+      return [runId];
     });
   }
 

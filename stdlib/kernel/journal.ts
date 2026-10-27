@@ -15,7 +15,7 @@ import { reject, type Result } from "./run";
  * 入参只存摘要：恢复时重新执行的 Run 会再发起同样的调用，按「序号、目标、入参摘要」比对。
  */
 export type Entry =
-  /** 第一行：树的根与外部给的入参；artifact 是当时装配的产物摘要，恢复时比对；origin 是发起它的入口 */
+  /** 第一行：树的根与外部给的入参；artifact 是当时装配的产物摘要，恢复时比对；origin 是谁发起的 */
   | { type: "root"; runId: string; operation: string; input: unknown; artifact: string; origin?: string }
   /** 发起了一个调用；建了子 Run 时记下它的 runId，在内核就被拒的没有 */
   | { type: "call"; runId: string; seq: number; target: string; input: string; child?: string }
@@ -97,7 +97,7 @@ export class Journal {
 
   /**
    * 提交阶段：由事件推出日志行并落盘。
-   * - run.started：根记 root 行（外部给的原样入参、产物摘要与发起它的入口）；子 Run 记父的 call 行（入参只存摘要）；
+   * - run.started：根记 root 行（外部给的原样入参、产物摘要与谁发起的）；子 Run 记父的 call 行（入参只存摘要）；
    *   恢复时重新执行的（带 attempt）只记 retry 行，它的 call 行已在日志里
    * - call.rejected：发起方的 call 行（没有子 Run）与 done 行
    * - run.exited / run.killed：父还在就记父的 done 行（被杀的记内核的拒绝）。根退出或被取消记 exit 行，结果留到被取走；

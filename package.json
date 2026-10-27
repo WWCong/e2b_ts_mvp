@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "bun app/mvp/main.ts",
+    "start": "bun app/mvp/start.ts",
+    "serve": "bun app/mvp/main.ts",
+    "chat": "bun app/mvp/console.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit && tsc --noEmit -p app/mvp"
   },

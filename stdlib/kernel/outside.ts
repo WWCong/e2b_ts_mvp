@@ -1,5 +1,5 @@
 /**
- * 对外接口（Kernel.outside）：宿主交给服务接口（stdlib/serve）与入口的那一份。
+ * 对外接口（Kernel.outside）：宿主交给服务接口（stdlib/serve）的那一份。
  * 调用只能调声明了 api 的 Operation；发起的树的根记下 origin（谁发起的），写进日志、重启后还在。
  * 根 Run 的结果留到被取走（reap）为止：调用方不在、或中途重启过，回来按 runId 还取得到（journal.ts 的 exit 行）。
  */
@@ -18,8 +18,6 @@ export type ApiInfo = { name: string; usage: string; input: Record<string, unkno
 export type Outside = {
   /** 按名字起一棵 Run 树，返回根的 runId；只能调声明了 api 的 Operation */
   submit(name: string, input: unknown): string;
-  /** 启动时恢复的、由这个 origin 发起的树（入口用；入口改成客户端后去掉） */
-  recovered(): string[];
   /** 结果还没被取走的树（谁发起的都列）。后续：有了认证按调用方过滤 */
   runs(): RunInfo[];
   /** 等树结束，不取走结果 */

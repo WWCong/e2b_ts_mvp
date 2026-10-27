@@ -7,7 +7,6 @@
  * 每个服务接口只提供它 expose 里列的 Operation。
  * 启停是机器的信号，只在这里处理：收到 SIGINT / SIGTERM 就优雅关停——先停止接新请求，再等在途的调用跑完
  * （最多 graceMs），关停中再收到一次就强杀，内核关停完断开连接、关掉基建（落盘、卸载…），退出进程。进度都在写前日志里，再启动接着做。
- * 装了入口（entry()，只剩终端，改成客户端后去掉）时，入口都结束服务也关停。
  * 后续加入：约定一个退出码表示要重启（harness_restart），由外层重新拉起进程。
  */
 
@@ -44,11 +43,9 @@ export async function host(assembly: Assembly): Promise<never> {
   for (const volume of volumes) await volume.open();
 
   const kernel = new Kernel({ ...config, journalDir: journalDir(infra.state) });
-  const serves: (() => Promise<void>)[] = [];
   for (const item of plugins) {
     const [dir, pluginConfig] = typeof item === "string" ? [item, undefined] : item;
-    const serve = await loadPlugin(kernel, dir, pluginConfig, infra);
-    if (serve) serves.push(serve);
+    await loadPlugin(kernel, dir, pluginConfig, infra);
   }
   // 对外哪些是装配的决定：列的不是 api 的，启动失败
   const apis = new Set(kernel.operationsApi().map((o) => o.name));
@@ -56,8 +53,9 @@ export async function host(assembly: Assembly): Promise<never> {
     for (const op of config.expose) if (!apis.has(op)) throw new Error(`serve.${name} exposes ${op}, which is not an api operation`);
   }
   await kernel.boot();
-  for (const service of services) {
+  for (const [i, service] of services.entries()) {
     service.listen({ outside: (origin) => kernel.outside(origin), subscribe: (fn) => kernel.events.subscribe(fn) });
+    console.log(`harness 在 ${service.address} 上服务，对外：${Object.values(serve)[i]!.expose.join("、") || "（无）"}`);
   }
 
   let stopped: Promise<void> | undefined;
@@ -70,21 +68,10 @@ export async function host(assembly: Assembly): Promise<never> {
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
-  let code = 0;
-  if (serves.length > 0) {
-    Promise.all(serves.map((serve) => serve())).then(
-      () => stopped ?? stop(),
-      (err) => {
-        console.error("[harness] serve failed", err);
-        code = 1;
-        if (!stopped) stop();
-      },
-    );
-  }
   await halted.promise;
   await stopped;
   for (const service of services) service.stop(true);
   for (const volume of volumes.reverse()) await volume.close();
   // 模型客户端等可能还留着连接，显式退出
-  process.exit(code);
+  process.exit(0);
 }

@@ -14,6 +14,8 @@ export type ServeContext = { outside(origin: string): Outside; subscribe(fn: Sub
  * 内核启动完成后 listen 开始接请求；关停时 stop(false) 先停止接新连接（连着的照常），关停完 stop(true) 断开连接
  */
 export type Service = {
+  /** 在哪：给人看的，如 unix:.harness/harness.sock */
+  readonly address: string;
   listen(ctx: ServeContext): void;
   stop(closeConnections: boolean): void;
 };

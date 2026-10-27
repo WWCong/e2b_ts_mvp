@@ -3,10 +3,11 @@
  * stdlib：harness 的框架包，唯一的公开入口。
  * - 写插件：op / decorator / plugin 声明，Ctx、Result 等类型
  * - 搭应用：装配配置交给 host；基建的实现按路径 import（stdlib/infra/volume 的 localDir、stdlib/infra/llm 的 piLlm，
- *   不从这里导出：免得每个插件 import stdlib 都带上模型 SDK）；自带的插件在 stdlib/plugins 下、入口在 stdlib/entries 下，按路径装载，
+ *   不从这里导出：免得每个插件 import stdlib 都带上模型 SDK）；自带的插件在 stdlib/plugins 下，按路径装载，
  *   如 "stdlib/plugins/time"。Kernel、loadPlugin 给测试与自己搭宿主用
- * kernel 下的其他模块（日志、回放、入口的声明 entry 等）是内部实现，不从这里导出：
- * 对外接口只交给 stdlib 里的入口，app 的插件用 api 声明自己的哪些 Operation 能从外面调。
+ * kernel 下的其他模块（日志、回放等）是内部实现，不从这里导出：对外接口只交给 stdlib 里的服务接口（stdlib/serve），
+ * app 的插件用 api 声明自己的哪些 Operation 能对外，装配的 serve.expose 决定实际对外哪些。
+ * 客户端（在 Harness 外面）在 stdlib/clients 下：HTTP 客户端、终端客户端。
  */
 
 export { decorator, op, plugin, type OpDecl, type PluginObject } from "./kernel/plugin";

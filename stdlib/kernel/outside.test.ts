@@ -120,7 +120,6 @@ describe("结果留到被取走", () => {
 
     const two = await setup({ journalDir: dir });
     expect(two.roots).toEqual([root]);
-    expect(two.outside.recovered()).toEqual([root]);
     expect(two.outside.runs()).toEqual([{ runId: root, operation: "demo_once", origin: "web", done: true }]);
     expect(two.events.map((e) => e.type)).toEqual([]);
     expect(await two.outside.reap(root)).toEqual({ ok: true, value: "第 1 次" });

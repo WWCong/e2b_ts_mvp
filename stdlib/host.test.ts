@@ -3,88 +3,93 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { httpClient, reachable } from "./clients/http";
 
 let dir: string;
+let socket: string;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "host-"));
+  socket = join(dir, "h.sock");
 });
 
-/** 起一个跑着测试应用的进程；until 等它打印出某段文字 */
-function launch(mode: string, ...args: string[]) {
-  const proc = Bun.spawn([process.execPath, join(import.meta.dir, "__fixtures__", "host", "main.ts"), mode, dir, ...args], {
+/** 起一个跑着测试应用的进程，等到它开始服务 */
+async function launch(...args: string[]) {
+  const proc = Bun.spawn([process.execPath, join(import.meta.dir, "__fixtures__", "host", "main.ts"), dir, socket, ...args], {
     stdout: "pipe",
     stderr: "pipe",
   });
-  let out = "";
-  const reading = (async () => {
-    for await (const chunk of proc.stdout) out += new TextDecoder().decode(chunk);
-  })();
-  const until = async (text: string) => {
-    while (!out.includes(text)) await Bun.sleep(5);
-  };
-  const exited = async () => {
-    const code = await proc.exited;
-    await reading;
-    return { code, out };
-  };
-  const stderr = () => new Response(proc.stderr).text();
-  return { proc, until, exited, stderr };
+  const exited = async () => ({ code: await proc.exited, stdout: await new Response(proc.stdout).text(), stderr: await new Response(proc.stderr).text() });
+  return { proc, exited };
 }
 
+async function serving(proc: Bun.Subprocess) {
+  while (!(await reachable(socket))) {
+    if (proc.exitCode !== null) throw new Error("harness exited before serving");
+    await Bun.sleep(10);
+  }
+}
+
+const client = () => httpClient({ socket, name: "test" });
+
 describe("宿主", () => {
-  test("入口都结束服务就关停：插件 onStop 之后退出", async () => {
-    expect(await launch("leave").exited()).toEqual({ code: 0, out: "serving, recovered 0\nstopped\n" });
+  test("在 socket 上对外服务，一直跑到收到信号；SIGINT 优雅关停，删掉 socket，打印在哪服务", async () => {
+    const app = await launch();
+    await serving(app.proc);
+    expect(await client().call("echo_say", { text: "hi" })).toMatchObject({ result: { ok: true, value: "echo: hi" } });
+
+    app.proc.kill("SIGINT");
+    const { code, stdout } = await app.exited();
+    expect(code).toBe(0);
+    expect(stdout).toBe(`harness 在 unix:${socket} 上服务，对外：echo_say、echo_wait、echo_busy\n`);
+    expect(existsSync(socket)).toBe(false);
   });
 
-  test("SIGINT 优雅关停，树停在 park 上、日志保留；再启动时入口认领到上次的树", async () => {
-    const one = launch("park");
-    await one.until("parked");
+  test("停在 park 上的树：关停时日志保留；再启动后客户端按 runId 接着等，回答后取到结果", async () => {
+    const one = await launch();
+    await serving(one.proc);
+    const res = await fetch("http://harness/operations/echo_wait?async", { unix: socket, method: "POST", body: "{}" });
+    const { runId } = (await res.json()) as { runId: string };
+    while ((await client().parks()).length === 0) await Bun.sleep(5);
     one.proc.kill("SIGINT");
-    expect(await one.exited()).toEqual({ code: 0, out: "serving, recovered 0\nparked\nstopped\n" });
-    expect(await readdir(join(dir, "journal"))).toHaveLength(1);
+    expect((await one.exited()).code).toBe(0);
+    expect(await readdir(join(dir, "journal"))).toEqual([`${runId}.jsonl`]);
 
-    // 恢复的树重新开出 park；入口不收割就结束服务，宿主关停，日志照旧保留
-    const two = await launch("leave").exited();
-    expect(two).toEqual({ code: 0, out: "parked\nserving, recovered 1\nstopped\n" });
-    expect(await readdir(join(dir, "journal"))).toHaveLength(1);
+    const two = await launch();
+    await serving(two.proc);
+    expect(await client().runs()).toEqual([{ runId, operation: "echo_wait", origin: "http", done: false }]);
+    const [park] = await client().parks();
+    await client().answer(park!.id, "好");
+    expect(await client().result(runId)).toEqual({ runId, result: { ok: true, value: "好" } });
+    two.proc.kill("SIGINT");
+    await two.exited();
   });
 
   test("关停中再收到一次信号就强杀，不等在途的调用", async () => {
-    const app = launch("busy");
-    await app.until("busy");
+    const app = await launch();
+    await serving(app.proc);
+    void fetch("http://harness/operations/echo_busy?async", { unix: socket, method: "POST", body: "{}" });
+    while ((await client().runs()).length === 0) await Bun.sleep(5);
     const t0 = performance.now();
     app.proc.kill("SIGINT");
     await Bun.sleep(100);
     app.proc.kill("SIGINT");
-    const { code, out } = await app.exited();
-    expect(performance.now() - t0).toBeLessThan(2000);
-    expect([code, out]).toEqual([0, "serving, recovered 0\nbusy\nstopped\n"]);
-  });
-
-  test("serve.http：启动后在 socket 上对外服务；同一个 socket 已有服务时第二个起不来；SIGINT 关停后删掉 socket", async () => {
-    const socket = join(dir, "h.sock");
-    const app = launch("http", socket);
-    const call = () =>
-      fetch("http://harness/operations/echo_say", { unix: socket, method: "POST", body: JSON.stringify({ text: "hi" }) }).then((r) => r.json());
-    let reply: unknown;
-    while (!reply) reply = await call().catch(() => undefined);
-    expect(reply).toMatchObject({ result: { ok: true, value: "echo: hi" } });
-
-    const second = launch("http", socket);
-    expect((await second.exited()).code).not.toBe(0);
-    expect(await second.stderr()).toContain(`a harness is already serving on ${socket}`);
-
-    app.proc.kill("SIGINT");
     expect((await app.exited()).code).toBe(0);
-    expect(existsSync(socket)).toBe(false);
+    expect(performance.now() - t0).toBeLessThan(2000);
   });
 
-  test("expose 列了不是 api 的 Operation：启动失败，不开服务", async () => {
-    const socket = join(dir, "h.sock");
-    const app = launch("badexpose", socket);
-    expect((await app.exited()).code).not.toBe(0);
-    expect(await app.stderr()).toContain("serve.http exposes echo_nope, which is not an api operation");
+  test("同一个 socket 已有服务时第二个起不来；expose 列了不是 api 的，启动失败、不开服务", async () => {
+    const app = await launch();
+    await serving(app.proc);
+    const second = await (await launch()).exited();
+    expect(second.code).not.toBe(0);
+    expect(second.stderr).toContain(`a harness is already serving on ${socket}`);
+    app.proc.kill("SIGINT");
+    await app.exited();
+
+    const bad = await (await launch("bad")).exited();
+    expect(bad.code).not.toBe(0);
+    expect(bad.stderr).toContain("serve.http exposes echo_nope, which is not an api operation");
     expect(existsSync(socket)).toBe(false);
   });
 });

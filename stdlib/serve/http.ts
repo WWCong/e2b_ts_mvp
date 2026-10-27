@@ -36,6 +36,7 @@ export async function httpService(config: HttpConfig): Promise<Service> {
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
 
   return {
+    address: socket ? `unix:${socket}` : `http://${hostname}:${port}`,
     listen(ctx) {
       const outsides = new Map<string, Outside>();
       const outsideOf = (req: Request) => {
