@@ -40,7 +40,11 @@ export type Operation = Surface & {
   output?: z.ZodType;
   /** 入参契约：建 Run 前按它校验，实现拿到解析后的值；也是交给模型的工具 schema（z.toJSONSchema） */
   input: z.ZodType;
+  /** 已经生成好的 JSON Schema（script 包的由它自己的 Zod 在解释器里生成）：给模型与对外的原样用它，不再由 input、output 生成 */
+  schemas?: { input: Record<string, unknown>; output?: Record<string, unknown> };
   impl: OperationImpl;
+  /** 实现的代码，进产物摘要；缺省取 String(impl)（script 包的实现在解释器里，这里是它打包后的代码） */
+  source?: string;
   /** 自选装饰器，按书写顺序从外到内 */
   decorators?: string[];
 };
@@ -165,7 +169,8 @@ export class Kernel {
 
   /**
    * 装上一个 script 包（应用层：编排，loader 交来）。它的 Operation 都公开：script 包导出的全部进公开表（7.2）。
-   * 实现发起的调用只能调公开的（callChild 查），不能直接挂起（ctx.park）。只能在 boot 之前
+   * 实现发起的调用只能调公开的（callChild 查），不能直接挂起（ctx.park）。只能在 boot 之前。
+   * loadScript 交来的实现在解释器里跑（stdlib/script）；测试直接交来的实现在进程里跑，规则相同
    */
   useScript(pkg: string, script: ScriptObject): void {
     this.checkPackage(pkg, script, SCRIPT_KEYS, "script");
@@ -193,14 +198,16 @@ export class Kernel {
     if (op.public) {
       if (!op.usage) throw new Error(`public operation needs usage: ${op.name}`);
       // io: "input" 按调用方要填的形状生成：带默认值的字段是可选的
-      const inputSchema = z.toJSONSchema(op.input, { io: "input" }) as Record<string, unknown>;
+      const inputSchema = op.schemas?.input ?? (z.toJSONSchema(op.input, { io: "input" }) as Record<string, unknown>);
       if (op.tool !== false) this.tools.set(op.name, { name: op.name, description: op.usage, inputSchema });
     }
     if (op.api) {
       if (!op.usage) throw new Error(`api operation needs usage: ${op.name}`);
       if (!op.output) throw new Error(`api operation needs output: ${op.name}`);
       const schema = (type: z.ZodType, io: "input" | "output") => z.toJSONSchema(type, { io }) as Record<string, unknown>;
-      this.apis.set(op.name, { name: op.name, usage: op.usage, input: schema(op.input, "input"), output: schema(op.output, "output") });
+      const input = op.schemas?.input ?? schema(op.input, "input");
+      const output = op.schemas?.output ?? schema(op.output, "output");
+      this.apis.set(op.name, { name: op.name, usage: op.usage, input, output });
     }
     this.operations.set(op.name, op);
     this.artifactDigest = undefined;
@@ -741,7 +748,7 @@ export class Kernel {
     this.artifactDigest ??= digest({
       operations: [...this.operations.values()]
         .sort((a, b) => (a.name < b.name ? -1 : 1))
-        .map(({ name, usage, public: isPublic, tool, script, api, decorators, only, exclude, impl }) => [
+        .map(({ name, usage, public: isPublic, tool, script, api, decorators, only, exclude, impl, source }) => [
           name,
           usage,
           isPublic,
@@ -751,7 +758,7 @@ export class Kernel {
           decorators,
           only,
           exclude,
-          String(impl),
+          source ?? String(impl),
         ]),
       decorators: [...this.decorators.values()]
         .sort((a, b) => (a.id < b.id ? -1 : 1))

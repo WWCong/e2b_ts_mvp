@@ -2,7 +2,7 @@
  * MVP 的服务端，即它的 Harness：装配交给宿主（stdlib 的 host），bun run serve 起它。分四层：
  * - 基建（infra）：Harness 外面给的能力——模型后端、工作区、持久状态。换实现（比如工作区换成 rclone+FUSE 挂载）只改这里
  * - 领域（plugins）：插件，fs、model 与 stdlib 自带的 ui、kv 等；插件声明需要哪些基建，宿主注入
- * - 应用（scripts）：script 包 agent、chat，编排：只能调公开的 Operation，不碰基建（状态存在 kv 里）
+ * - 应用（scripts）：script 包 agent、chat，编排：在解释器（QuickJS）里跑，只能调公开的 Operation，碰不到基建（状态存在 kv 里）
  * - 接口（serve）：哪些 Operation 怎么对外
  * 界面不在这里：MVP 的客户端（../client）经服务接口连上来，和网页、别的系统一样；bun start 把两边一起起（../start.ts）。
  * 本地状态都在 STATE_DIR 下，在工作区之外：写前日志在 journal/，插件的存储在 store/<包名>/（chat 的对话历史在 kv 的那块里：store/kv/chat/），

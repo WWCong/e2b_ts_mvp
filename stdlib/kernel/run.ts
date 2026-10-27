@@ -36,7 +36,10 @@ export type Ctx = {
   call: Call;
   /** 写死的调用：ctx.ops.fs.read(input) 即 ctx.call("fs_read", input)，包与 Operation 不在注册表里编译即报错 */
   ops: Ops;
-  /** Run 被杀（取消或关停）时 abort。传给 fetch、子进程等支持它的 API，IO 当场中止 */
+  /**
+   * Run 被杀（取消或关停）时 abort。传给 fetch、子进程等支持它的 API，IO 当场中止。
+   * 在解释器里跑的 script 包没有它：不做 IO，被杀时解释器直接丢掉
+   */
   signal: AbortSignal;
   /** 这个 Run 能力面里的公开 Operation，按名字排序（逐字节稳定）。装饰器的 ctx 没有它（8.1） */
   tools(): ToolSpec[];

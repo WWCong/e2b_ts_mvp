@@ -176,7 +176,7 @@ export type ScriptDecl<P extends ScriptObject = ScriptObject> = { kind: "script"
 
 /**
  * 声明 script 包（应用层：编排）：它的 Operation 都公开，实现只能调公开的 Operation，不能直接挂起（kernel.useScript）。
- * 现在与插件在同一个进程里跑，不做 IO 靠应用的分层检查；以后在内嵌的解释器里跑（7.5），写法不变
+ * 经 loadScript 装载的在内嵌的解释器里跑（stdlib/script，7.5）：只能 import stdlib、zod 与包里的文件，碰不到宿主
  */
 export function script<P extends ScriptObject>(object: P): ScriptDecl<P> {
   return { kind: "script", object };
