@@ -7,8 +7,11 @@ import type { Message, UserMessage } from "@earendil-works/pi-ai";
 /** 交给模型写摘要时，一条工具结果最多带多少字 */
 const TOOL_RESULT_CHARS = 2000;
 
+/** 一张图片大约多少 token：各家按尺寸算，常见的一千多，这里取一个粗估的数，免得带图的历史迟迟不压 */
+const IMAGE_TOKENS = 1600;
+
 /**
- * 历史大约多少 token：按文字粗估，中日韩等宽字符一个算一个，其余四个字符算一个。
+ * 历史大约多少 token：按文字粗估，中日韩等宽字符一个算一个，其余四个字符算一个；每张图片按 IMAGE_TOKENS 算。
  * 不用模型回报的 usage：压缩后保留的旧回复还带着压缩前的用量，会让下一轮误以为还要压
  */
 export function estimateTokens(history: readonly Message[]): number {
@@ -16,9 +19,16 @@ export function estimateTokens(history: readonly Message[]): number {
   for (const message of history) {
     const text = render(message);
     const wide = text.match(/[⺀-鿿가-힯豈-﫿＀-￯]/g)?.length ?? 0;
-    tokens += wide + Math.ceil((text.length - wide) / 4);
+    tokens += wide + Math.ceil((text.length - wide) / 4) + images(message) * IMAGE_TOKENS;
   }
   return tokens;
+}
+
+/** 一条消息里的图片张数（用户消息与工具结果里才有） */
+function images(message: Message): number {
+  if (message.role !== "user" && message.role !== "toolResult") return 0;
+  const { content } = message;
+  return typeof content === "string" ? 0 : content.filter((c) => c.type === "image").length;
 }
 
 /**

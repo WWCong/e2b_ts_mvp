@@ -16,4 +16,5 @@ export { host, type Assembly } from "./host";
 export type { Infra, Llm, Stat, Volume } from "./infra";
 export type { ApiName, Packages } from "./kernel/ops";
 export type { Ctx, Rejected, Result, ToolSpec } from "./kernel/run";
+export { image, isToolContent, type ContentBlock, type ToolContent } from "./content";
 export type { HarnessEvent } from "./kernel/events";

@@ -24,7 +24,7 @@ import {
   type WriteToolInput,
 } from "pi-tools";
 import { z } from "zod";
-import { decorator, op, plugin, type OpDecl } from "stdlib";
+import { decorator, op, plugin, type ContentBlock, type OpDecl, type ToolContent } from "stdlib";
 import { escapes, operations } from "./operations";
 
 /** 交给 pi 工具的根：虚拟的，模型看到的绝对路径都在它下面 */
@@ -48,15 +48,20 @@ type PiTool = {
     signal: AbortSignal | undefined,
     onUpdate: undefined,
     ctx: never,
-  ): Promise<{ content: ({ type: "text"; text: string } | { type: "image"; mimeType: string })[] }>;
+  ): Promise<{ content: ContentBlock[] }>;
 };
 
 /**
- * 把 pi 的工具包成 Operation：入参 schema 就是它的 JSON Schema，结果取文字部分。
+ * 把 pi 的工具包成 Operation：入参 schema 就是它的 JSON Schema。结果只有文字时是字符串；
+ * 带图片时（fs_read 读到图片）是 ToolContent，文字说明与图片块一起交给 agent，原样放进给模型的工具结果。
  * 入参里的路径先换成相对工作区的（fs_pathGuard 已拒掉越界的），各工具再按自己的根解析。
  * unavailable：这个工具现在用不了的原因（缺本地路径、缺命令），调用时以拒绝返回
  */
-function wrap<I>(tool: PiTool, decorators: string[], unavailable?: () => string | undefined): OpDecl<I, string> {
+function wrap<I, O extends string | ToolContent = string>(
+  tool: PiTool,
+  decorators: string[],
+  unavailable?: () => string | undefined,
+): OpDecl<I, O> {
   return op({
     usage: tool.description,
     public: true,
@@ -68,7 +73,8 @@ function wrap<I>(tool: PiTool, decorators: string[], unavailable?: () => string 
       const { path } = input as { path?: string };
       const params = path === undefined ? input : { ...input, path: inside(path) ?? path };
       const result = await tool.execute(ctx.runId, params as never, ctx.signal, undefined, undefined as never);
-      return result.content.map((c) => (c.type === "text" ? c.text : `[图片 ${c.mimeType}，暂不支持]`)).join("");
+      if (result.content.some((c) => c.type === "image")) return { content: result.content } as O;
+      return result.content.map((c) => (c.type === "text" ? c.text : "")).join("") as O;
     },
   });
 }
@@ -87,7 +93,8 @@ export default plugin({ needs: ["workspace"] }, (_config, { workspace }) => {
     requires: ["ui"],
 
     operations: {
-      read: wrap<ReadToolInput>(createReadToolDefinition(ROOT, { operations: ops.read }), guard),
+      // 只有 read 会带图片
+      read: wrap<ReadToolInput, string | ToolContent>(createReadToolDefinition(ROOT, { operations: ops.read }), guard),
       // 先查路径再问人：越出工作区的写不必打扰人
       write: wrap<WriteToolInput>(createWriteToolDefinition(ROOT, { operations: ops.write }), approve),
       edit: wrap<EditToolInput>(createEditToolDefinition(ROOT, { operations: ops.edit }), approve),

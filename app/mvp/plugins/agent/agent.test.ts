@@ -66,7 +66,11 @@ const step =
     return fauxAssistantMessage(content, toolUse ? { stopReason: "toolUse" } : undefined);
   };
 
-const assist = (prompt: string, history: Message[] = []) => kernel.reap(kernel.submit("agent_assist", { prompt, history }));
+const assist = (prompt: string, history: Message[] = [], images: { mimeType: string; data: string }[] = []) =>
+  kernel.reap(kernel.submit("agent_assist", { prompt, history, images }));
+
+/** 1×1 的红点 PNG */
+const PNG_1X1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 /** 某次请求里发给模型的对话消息（去掉系统消息） */
 const messagesIn = (i: number) => requests[i]!.messages.filter((m): m is Message => m.role !== "system");
@@ -174,6 +178,26 @@ describe("agent_assist", () => {
       by: "agent_assist",
       reason: "model_complete rejected by model_complete: No more faux responses queued",
     });
+  });
+});
+
+describe("图片", () => {
+  test("用户随这一句发来的图片与文字一起交给模型；fs_read 读到的图片原样放进工具结果", async () => {
+    await writeFile(join(workspace, "pixel.png"), Buffer.from(PNG_1X1, "base64"));
+    faux.setResponses([step(fauxToolCall("fs_read", { path: "pixel.png" }, { id: "call-1" })), step(fauxText("都是红点"))]);
+
+    const result = await assist("这两张图里是什么？", [], [{ mimeType: "image/png", data: PNG_1X1 }]);
+    expect(result).toMatchObject({ ok: true, value: { answer: "都是红点" } });
+    const asked = messagesIn(0).find((m) => m.role === "user")!;
+    expect(asked.content).toEqual([
+      { type: "text", text: "这两张图里是什么？" },
+      { type: "image", mimeType: "image/png", data: PNG_1X1 },
+    ]);
+    const read = messagesIn(1).find((m) => m.role === "toolResult")!;
+    expect(read.content.map((c) => [c.type, c.type === "image" ? c.mimeType : ""])).toEqual([
+      ["text", ""],
+      ["image", "image/png"],
+    ]);
   });
 });
 

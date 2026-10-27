@@ -4,7 +4,7 @@
  * 各 Operation 的入参与出参怎么摘要写在这里，只影响显示；形状对不上时退回截断的 JSON。
  */
 
-import { plugin, type HarnessEvent } from "stdlib";
+import { isToolContent, plugin, type HarnessEvent } from "stdlib";
 
 export default plugin(() => {
   /** runId → 深度，用来缩进；Run 结束后移除 */
@@ -52,6 +52,8 @@ function line(depth: number, text: string): void {
  * model_compact 只看压没压；agent_assist 与 chat_say 只看这一句与回答；harness_park 的入参只看 payload（要问的问题）
  */
 function brief(operation: string, side: "input" | "output", value: unknown): string {
+  // 带图片的工具结果：文字照常，图片只写类型，不打出 base64
+  if (isToolContent(value)) value = value.content.map((c) => (c.type === "text" ? c.text : `[图片 ${c.mimeType}]`)).join(" ");
   const plain = side === "output" ? `→ ${short(value)}` : short(value);
   try {
     return summarize(operation, side, value) ?? plain;
@@ -64,8 +66,10 @@ function summarize(operation: string, side: "input" | "output", value: unknown):
   switch (`${operation} ${side}`) {
     case "harness_park input":
       return short((value as { payload: unknown }).payload);
-    case "chat_say input":
-      return short((value as { text: unknown }).text);
+    case "chat_say input": {
+      const { text, images } = value as { text: unknown; images?: unknown[] };
+      return `${short(text)}${images?.length ? `（带 ${images.length} 张图）` : ""}`;
+    }
     case "chat_load output":
       return `→ (${(value as unknown[]).length} 条消息)`;
     case "chat_save input":
@@ -77,8 +81,9 @@ function summarize(operation: string, side: "input" | "output", value: unknown):
       return compacted ? `→ 压成 ${history.length} 条` : "→ 不用压";
     }
     case "agent_assist input": {
-      const { prompt, history } = value as { prompt: string; history?: unknown[] };
-      return `${short(prompt)}${history?.length ? `（带 ${history.length} 条历史）` : ""}`;
+      const { prompt, images, history } = value as { prompt: string; images?: unknown[]; history?: unknown[] };
+      const extra = [images?.length ? `${images.length} 张图` : "", history?.length ? `${history.length} 条历史` : ""].filter(Boolean);
+      return `${short(prompt)}${extra.length ? `（带 ${extra.join("、")}）` : ""}`;
     }
     case "agent_assist output":
       return `→ ${short((value as { answer: unknown }).answer)}`;

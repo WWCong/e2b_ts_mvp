@@ -25,12 +25,14 @@ async function setup(journalDir?: string) {
   const events: HarnessEvent[] = [];
   kernel.events.subscribe((e) => events.push(e));
   const prompts: [string, number][] = [];
+  const sentImages: unknown[] = [];
   kernel.use("agent", {
     operations: {
       assist: op({
-        input: z.object({ prompt: z.string(), history: z.array(z.any()).default([]) }),
-        impl: async (ctx, { prompt, history }) => {
+        input: z.object({ prompt: z.string(), images: z.array(z.any()).default([]), history: z.array(z.any()).default([]) }),
+        impl: async (ctx, { prompt, images, history }) => {
           prompts.push([prompt, history.length]);
+          if (images.length > 0) sentImages.push(...images);
           if (prompt === "坏") throw new Error("模型挂了");
           if (prompt === "等等") await ctx.park({ schema: z.toJSONSchema(z.string()), payload: "等什么？" });
           const answer = `答：${prompt}`;
@@ -43,7 +45,7 @@ async function setup(journalDir?: string) {
   const roots = await kernel.boot();
   const run = (name: string, input: unknown) => kernel.reap(kernel.submit(name, input));
   const saved = () => (existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as { history: unknown[] }).history : undefined);
-  return { kernel, events, prompts, roots, run, saved };
+  return { kernel, events, prompts, sentImages, roots, run, saved };
 }
 
 describe("chat 插件", () => {
@@ -59,6 +61,17 @@ describe("chat 插件", () => {
     ]);
     expect(saved()).toHaveLength(4);
     expect(await run("chat_greet", {})).toEqual({ ok: true, value: "接着之前的对话（4 条消息）；/new 开始新对话" });
+  });
+
+  test("带图片说一句：图片随这一句交给 agent；图片不合格式的，入参不符、调不起来", async () => {
+    const { kernel, run, sentImages } = await setup();
+    const image = { mimeType: "image/png", data: "iVBORw0KGgo=" };
+
+    expect(await run("chat_say", { text: "看图", images: [image] })).toEqual({ ok: true, value: "答：看图" });
+    expect(sentImages).toEqual([image]);
+    expect(() => kernel.submit("chat_say", { text: "看图", images: [{ mimeType: "image/tiff", data: "x" }] })).toThrow(
+      "invalid input for chat_say",
+    );
   });
 
   test("一轮三步都是子调用：读历史、agent、存历史", async () => {

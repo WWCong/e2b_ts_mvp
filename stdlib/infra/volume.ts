@@ -7,7 +7,7 @@
  * 出错信息里的路径是相对的，不带出宿主机的绝对路径。
  */
 
-import { mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 
 export type Stat = { kind: "file" | "dir"; size: number; mtimeMs: number };
@@ -24,7 +24,8 @@ export interface Volume {
   open(): Promise<void>;
   /** 宿主关停最后调：落盘、卸载等 */
   close(): Promise<void>;
-  read(path: string): Promise<Uint8Array>;
+  /** 读整个文件；给了 length 只读开头最多这么多字节（看文件头认类型用） */
+  read(path: string, options?: { length?: number }): Promise<Uint8Array>;
   /** 整个替换：写到一半崩溃不留半截；父目录自动建 */
   write(path: string, data: string | Uint8Array): Promise<void>;
   /** 不存在返回 undefined */
@@ -74,7 +75,17 @@ export function localDir(root: string): Volume {
     localPath: base,
     open: async () => void (await mkdir(base, { recursive: true })),
     close: async () => {},
-    read: at((abs) => readFile(abs)),
+    read: at(async (abs, { length }: { length?: number } = {}) => {
+      if (length === undefined) return readFile(abs);
+      const file = await open(abs, "r");
+      try {
+        const buffer = Buffer.alloc(length);
+        const { bytesRead } = await file.read(buffer, 0, length, 0);
+        return buffer.subarray(0, bytesRead);
+      } finally {
+        await file.close();
+      }
+    }),
     write: at(async (abs, data: string | Uint8Array) => {
       await mkdir(dirname(abs), { recursive: true });
       // 先写临时文件再改名：同一目录里的 rename 是原子的

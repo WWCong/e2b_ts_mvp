@@ -2,10 +2,13 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Kernel, loadPlugin, type HarnessEvent, type Volume } from "stdlib";
+import { isToolContent, Kernel, loadPlugin, type HarnessEvent, type Volume } from "stdlib";
 import { localDir } from "stdlib/infra/volume";
 
 let workspace: string;
+
+/** 1×1 的红点 PNG */
+const PNG_1X1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), "fs-plugin-"));
@@ -42,6 +45,20 @@ describe("fs 插件", () => {
     expect(await run("fs_read", { path: "/workspace/notes/b.md" })).toEqual({ ok: true, value: "你好\n大家\n" });
     expect(await run("fs_list", {})).toEqual({ ok: true, value: "notes/" });
     expect(await run("fs_find", { pattern: "**/*.md" })).toEqual({ ok: true, value: "notes/b.md" });
+  });
+
+  test("读图片：按文件头认出来，结果是文字说明加图片块（base64），交给模型看", async () => {
+    const { run } = await setup();
+    // 1×1 的 PNG；扩展名故意不对，按文件头认
+    await writeFile(join(workspace, "pixel.dat"), Buffer.from(PNG_1X1, "base64"));
+
+    const result = await run("fs_read", { path: "pixel.dat" });
+    const content = result.ok && isToolContent(result.value) ? result.value.content : [];
+    const [note, image] = content as [{ type: string; text: string }, { type: string; mimeType: string; data: string }];
+    expect(content).toHaveLength(2);
+    expect([note.type, image.type, image.mimeType]).toEqual(["text", "image", "image/png"]);
+    expect(note.text).toStartWith("Read image file [image/png]");
+    expect(Buffer.from(image.data, "base64").subarray(1, 4).toString()).toBe("PNG");
   });
 
   test.if(Boolean(Bun.which("rg")))("搜索：fs_grep 在工作区的本地路径上走 ripgrep", async () => {

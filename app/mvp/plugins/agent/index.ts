@@ -3,6 +3,8 @@
  * 直到模型不再调工具。被拒绝的调用原样作为出错的工具结果交给模型，由它改道或重试。
  * 多轮对话：入参带之前的 history，出参是回答与更新后的 history（含这一轮的工具调用与结果），下一轮原样传回，
  * 交给模型的前缀逐字节不变。对话存在哪由调用方决定，agent 本身不存状态。
+ * 图片：这一句可以带图片（images，base64），与文字一起作为用户消息交给模型；工具结果带图片的（ToolContent，
+ * 如 fs_read 读到图片）原样放进工具结果。模型不支持看图时由 pi-ai 换成占位文字。
  * 每轮开头经 model_compact 检查一次历史，超过配置 compactOver（估计的 token 数）就压缩（8.3）；
  * 压缩后的历史随出参交回，下一轮从它开始，同一段只压一次。
  * MVP 里写成插件；方案中 agent 循环是 script 包，等 script 运行时做好再挪过去。
@@ -10,7 +12,7 @@
 
 import type { Message, ToolCall } from "@earendil-works/pi-ai";
 import { z } from "zod";
-import { op, plugin, type Ctx, type Result } from "stdlib";
+import { image, isToolContent, op, plugin, type Ctx, type Result } from "stdlib";
 
 const PERSONA =
   "你是工作区助手。需要查看或修改文件时使用工具；信息不够或有几种做法需要用户拍板时，用 ui_ask 问用户。做完后用中文简要回答用户。";
@@ -19,6 +21,8 @@ const MAX_TURNS = 20;
 const makeAssist = (compactOver: number) => op({
   input: z.object({
     prompt: z.string(),
+    /** 随这一句发来的图片 */
+    images: z.array(image).default([]),
     /** 之前几轮的历史：上一轮出参里的 history，原样传回 */
     history: z.array(z.custom<Message>()).default([]),
   }),
@@ -27,7 +31,8 @@ const makeAssist = (compactOver: number) => op({
     const tools = ctx.tools();
     const compacted = await ctx.ops.model.compact({ history: input.history, over: compactOver });
     if (!compacted.ok) throw new Error(`model_compact rejected by ${compacted.by}: ${compacted.reason}`);
-    const history: Message[] = [...compacted.value.history, { role: "user", content: input.prompt, timestamp: await now(ctx) }];
+    const content = input.images.length > 0 ? [{ type: "text" as const, text: input.prompt }, ...input.images.map((i) => ({ type: "image" as const, ...i }))] : input.prompt;
+    const history: Message[] = [...compacted.value.history, { role: "user", content, timestamp: await now(ctx) }];
 
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       const r = await ctx.ops.model.complete({ systemPrompt: PERSONA, messages: history, tools });
@@ -58,7 +63,7 @@ async function now(ctx: Ctx): Promise<number> {
   return r.value;
 }
 
-/** 调用结果写成给模型看的工具结果：成功给值，被拒给拒绝的来由 */
+/** 调用结果写成给模型看的工具结果：成功给值（带图片的原样给内容块），被拒给拒绝的来由 */
 function toolResult(call: ToolCall, result: Result, timestamp: number): Message {
   const text = result.ok
     ? typeof result.value === "string"
@@ -69,7 +74,7 @@ function toolResult(call: ToolCall, result: Result, timestamp: number): Message 
     role: "toolResult",
     toolCallId: call.id,
     toolName: call.name,
-    content: [{ type: "text", text }],
+    content: result.ok && isToolContent(result.value) ? result.value.content : [{ type: "text", text }],
     isError: !result.ok,
     timestamp,
   };

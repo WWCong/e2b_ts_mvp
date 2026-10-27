@@ -9,7 +9,7 @@
 
 import type { Message } from "@earendil-works/pi-ai";
 import { z } from "zod";
-import { op, plugin } from "stdlib";
+import { image, op, plugin } from "stdlib";
 
 const none = z.object({});
 const FILE = "conversation.json";
@@ -26,14 +26,14 @@ export default plugin({ needs: ["store"] }, (_config, { store }) => {
       /** 说一句：连同历史交给 agent，存下更新后的历史，返回回答 */
       say: op({
         api: true,
-        usage: "说一句话，返回回答。对话历史在服务端保存，下一句接着这段对话",
-        input: z.object({ text: z.string() }),
+        usage: "说一句话，可以带图片（base64），返回回答。对话历史在服务端保存，下一句接着这段对话",
+        input: z.object({ text: z.string(), images: z.array(image).default([]) }),
         output: z.string(),
         only: ["chat", "agent"],
-        impl: async (ctx, { text }): Promise<string> => {
+        impl: async (ctx, { text, images }): Promise<string> => {
           const history = await ctx.ops.chat.load({});
           if (!history.ok) throw new Error(`chat_load rejected by ${history.by}: ${history.reason}`);
-          const turn = await ctx.ops.agent.assist({ prompt: text, history: history.value });
+          const turn = await ctx.ops.agent.assist({ prompt: text, images, history: history.value });
           if (!turn.ok) throw new Error(`${turn.by}: ${turn.reason}`);
           const saved = await ctx.ops.chat.save({ history: turn.value.history });
           if (!saved.ok) throw new Error(`chat_save rejected by ${saved.by}: ${saved.reason}`);

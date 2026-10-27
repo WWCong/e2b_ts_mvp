@@ -10,6 +10,14 @@ test("estimateTokens：中日韩等宽字符一个算一个，其余四个字符
   expect(estimateTokens([user("你好"), user("abcd")])).toBe(5 + 4);
 });
 
+test("estimateTokens：每张图片按 1600 算（用户消息与工具结果里的）", () => {
+  const image = { type: "image" as const, data: "AAAA", mimeType: "image/png" };
+  const withImage: Message = { role: "user", content: [{ type: "text", text: "abcd" }, image], timestamp: 0 };
+  const toolImage: Message = { role: "toolResult", toolCallId: "1", toolName: "fs_read", content: [image], isError: false, timestamp: 0 };
+  expect(estimateTokens([withImage]) - estimateTokens([user("abcd")])).toBeGreaterThanOrEqual(1600);
+  expect(estimateTokens([toolImage])).toBeGreaterThanOrEqual(1600);
+});
+
 test("splitAt：保留最近 keep 轮，返回保留部分的起点；轮数不超过 keep 时返回 0", () => {
   const history = [user("1"), user("2"), user("3")];
   expect(splitAt(history, 1)).toBe(2);

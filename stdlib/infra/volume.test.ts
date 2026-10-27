@@ -30,12 +30,16 @@ describe("localDir", () => {
     await volume.write("a/b/c.txt", "一");
     await volume.write("a/b/c.txt", new TextEncoder().encode("二"));
     expect(text(await volume.read("a/b/c.txt"))).toBe("二");
+    // 只读开头：看文件头认类型用
+    await volume.write("long.txt", "abcdef");
+    expect(text(await volume.read("long.txt", { length: 3 }))).toBe("abc");
+    expect(text(await volume.read("long.txt", { length: 100 }))).toBe("abcdef");
     expect(await readdir(join(root, "a/b"))).toEqual(["c.txt"]);
     expect(await volume.stat("a/b/c.txt")).toMatchObject({ kind: "file", size: 3 });
     expect(await volume.stat("a")).toMatchObject({ kind: "dir" });
     expect(await volume.stat("nope")).toBeUndefined();
     await volume.mkdir("d/e");
-    expect((await volume.list(".")).sort()).toEqual(["a", "d"]);
+    expect((await volume.list(".")).sort()).toEqual(["a", "d", "long.txt"]);
   });
 
   test("glob：在 dir 下找文件，路径相对 dir；ignore 跳过，limit 封顶", async () => {

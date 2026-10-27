@@ -4,7 +4,11 @@
  */
 
 import { posix } from "node:path";
+import { detectSupportedImageMimeType } from "pi-utils/mime";
 import type { Volume } from "stdlib";
+
+/** 认图片要看的文件头有多长（与 pi 的一致） */
+const SNIFF_BYTES = 4100;
 
 /** 相对路径是否越出了它的基准目录 */
 export function escapes(rel: string): boolean {
@@ -29,7 +33,13 @@ export function operations(workspace: Volume, root: string) {
   const access = async (abs: string) => void (await stat(abs));
 
   return {
-    read: { readFile, access },
+    // 认出图片（png、jpeg、gif、webp、bmp）pi 就按图片读：缩放、转码后作为图片块交回
+    read: {
+      readFile,
+      access,
+      detectImageMimeType: async (abs: string) =>
+        detectSupportedImageMimeType(Buffer.from(await workspace.read(rel(abs), { length: SNIFF_BYTES }))) ?? undefined,
+    },
     write: { writeFile, mkdir: (abs: string) => workspace.mkdir(rel(abs)) },
     edit: { readFile, writeFile, access },
     ls: {

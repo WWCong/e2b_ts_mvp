@@ -3,12 +3,13 @@
  * @ts-expect-error 那一行若不再报错，tsc 反过来报错。
  */
 
-import { plugin, type ApiName, type Ctx, type Result } from "stdlib";
+import { plugin, type ApiName, type Ctx, type Result, type ToolContent } from "stdlib";
 
 export async function check(ctx: Ctx) {
   // 入参按 schema 检查，带默认值的字段可不填；结果带实现返回值的类型
   const read = await ctx.ops.fs.read({ path: "a.md" });
-  if (read.ok) read.value satisfies string;
+  // 读到图片时是 ToolContent
+  if (read.ok) read.value satisfies string | ToolContent;
   const list = await ctx.ops.fs.list({});
   if (list.ok) list.value satisfies string;
   const now = await ctx.call("time_now", null);
@@ -29,6 +30,8 @@ export async function check(ctx: Ctx) {
   await ctx.call("fs_read", { file: "a.md" });
   // @ts-expect-error 结果类型不符
   if (read.ok) read.value satisfies number;
+  // @ts-expect-error fs_read 可能带图片，不只是文字
+  if (read.ok) read.value satisfies string;
 }
 
 // 装配配置的 expose 只能填声明了 api 的 Operation
