@@ -1,10 +1,12 @@
 /**
- * 插件的声明（从 stdlib 导出）：插件包的默认导出是 plugin(工厂)：装载时以装配配置调一次工厂，
- * 返回的插件对象里放 Operation、装饰器与挂点方法；工厂里的变量就是这个插件实例自己的状态。
+ * 包的声明（从 stdlib 导出）。
+ * - 插件（领域层）：默认导出是 plugin(工厂)：装载时以装配配置调一次工厂，
+ *   返回的插件对象里放 Operation、装饰器与挂点方法；工厂里的变量就是这个插件实例自己的状态。
+ * - script 包（应用层）：默认导出是 script(对象)，只放 Operation（kernel.useScript）。
  * Operation 与装饰器的名字取「包名_键名」，声明里不写（kernel.use）。
  */
 
-import type { z } from "zod";
+import { z } from "zod";
 import type { Granted, Need } from "../infra";
 import type { Decorator, DecoratorDef, OnError } from "./chain";
 import type { EventBody, HarnessEvent } from "./events";
@@ -28,8 +30,10 @@ export function op<S extends z.ZodType, O, A extends boolean = false>(decl: {
   output?: z.ZodType<O>;
   /** 用法说明；公开的 Operation 必须写，交给模型时即工具的 description */
   usage?: string;
-  /** 公开的才会作为工具交给模型；缺省不公开 */
+  /** 公开（进公开表）：script 包能调，缺省也作为工具交给模型；缺省不公开 */
   public?: boolean;
+  /** 公开的写 false：只给 script 调，不交给模型（如调模型的、取时间的） */
+  tool?: boolean;
   /**
    * 能对外：可以列进服务接口的 expose（装配配置）。插件只能声明自己的 Operation；
    * 对不对外由装配决定。api 的必须写 usage 与 output
@@ -45,6 +49,14 @@ export function op<S extends z.ZodType, O, A extends boolean = false>(decl: {
   // S 的入参类型即 z.input<S>，泛型下 TS 推不出这层关系。
   // A 只从 decl 推：写在插件对象里时，上下文的类型（api?: boolean）会把它放宽成 boolean
   return decl as OpDecl<z.input<S>, O> & { api: A };
+}
+
+/**
+ * 入参或出参里不校验、原样交给实现的值，类型按 T（如 pi-ai 的 Message）。JSON Schema 里是 {}（任意值）：
+ * z.custom 转不成 JSON Schema，公开与 api 的 Operation 里用它代替
+ */
+export function opaque<T>(): z.ZodType<T, T> {
+  return z.unknown() as z.ZodType<T, T>;
 }
 
 /** 声明一个装饰器；onError 缺省 closed（管控类出错必须中断） */
@@ -146,6 +158,29 @@ export const PLUGIN_KEYS: ReadonlySet<string> = new Set([
   ...Object.values(AFTER),
   ...Object.keys(BEFORE),
 ]);
+
+/**
+ * script 包对象：只有 Operation 与依赖的包名；没有装饰器、挂点、基建，也没有配置
+ * （人设、阈值这些写在包里，要改就复制一份改，7.3、R7）
+ */
+export type ScriptObject = {
+  /** 依赖的包（插件或 script 包）。缺了启动失败 */
+  requires?: string[];
+  operations: Record<string, OpDecl>;
+};
+
+export const SCRIPT_KEYS: ReadonlySet<string> = new Set(["requires", "operations"]);
+
+/** P：script 包对象的具体类型，注册表据它推出各 Operation 的类型 */
+export type ScriptDecl<P extends ScriptObject = ScriptObject> = { kind: "script"; object: P };
+
+/**
+ * 声明 script 包（应用层：编排）：它的 Operation 都公开，实现只能调公开的 Operation，不能直接挂起（kernel.useScript）。
+ * 现在与插件在同一个进程里跑，不做 IO 靠应用的分层检查；以后在内嵌的解释器里跑（7.5），写法不变
+ */
+export function script<P extends ScriptObject>(object: P): ScriptDecl<P> {
+  return { kind: "script", object };
+}
 
 /** P：工厂返回的插件对象的具体类型，注册表据它推出各 Operation 的类型；needs：要注入的基建 */
 export type PluginDecl<C, P extends PluginObject = PluginObject> = {

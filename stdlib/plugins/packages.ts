@@ -4,12 +4,14 @@
  */
 
 import type harness from "./harness";
+import type kv from "./kv";
 import type time from "./time";
 import type ui from "./ui";
 
 declare module "stdlib" {
   interface Packages {
     harness: typeof harness;
+    kv: typeof kv;
     time: typeof time;
     ui: typeof ui;
   }

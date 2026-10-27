@@ -1,5 +1,5 @@
 /**
- * 终端客户端画 Run 树时，MVP 各 Operation 的入参、出参怎么摘要：历史只给条数；model_complete 只取要点
+ * 终端客户端画 Run 树时，MVP 各 Operation 的入参、出参怎么摘要：历史只给条数（kv 里存的对话历史也是）；model_complete 只取要点
  * （几条消息几个工具，模型要调谁或回答了什么）；model_compact 只看压没压；agent_assist 与 chat_say 只看这一句与回答；
  * harness_park 的入参只看 payload（要问的问题）。只影响显示；返回 undefined 用缺省的截断 JSON
  */
@@ -15,10 +15,14 @@ export const brief: Brief = (operation, side, value) => {
       const { text, images } = value as { text: unknown; images?: unknown[] };
       return `${short(text)}${images?.length ? `（带 ${images.length} 张图）` : ""}`;
     }
-    case "chat_load output":
-      return `→ (${(value as unknown[]).length} 条消息)`;
-    case "chat_save input":
-      return `(${(value as { history: unknown[] }).history.length} 条消息)`;
+    case "kv_get input":
+      return (value as { key: string }).key;
+    case "kv_get output":
+      return Array.isArray(value) ? `→ (${value.length} 条消息)` : undefined;
+    case "kv_set input": {
+      const { key, value: stored } = value as { key: string; value: unknown };
+      return Array.isArray(stored) ? `${key} (${stored.length} 条消息)` : undefined;
+    }
     case "model_compact input":
       return `(${(value as { history: unknown[] }).history.length} 条消息)`;
     case "model_compact output": {

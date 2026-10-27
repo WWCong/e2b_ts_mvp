@@ -27,6 +27,8 @@ export type Ctx = {
   runId: string;
   /** 第几次执行：平时是 1；崩溃时正在执行、恢复后重新执行的加一。大于 1 时之前的执行可能已生效一部分 */
   attempt: number;
+  /** 调用方所在的包：父 Run 的 Operation 的包名；外部发起的根 Run 没有。按调用方分开数据的（如 kv）据它分 */
+  callerPackage?: string;
   /**
    * 发起这个 Run 的子调用并等它返回；拒绝作为结果返回（5.3）。
    * 名字在注册表里时入参与结果带类型；名字是变量（如模型挑的工具）时照常调用（ops.ts）
@@ -41,7 +43,8 @@ export type Ctx = {
   /**
    * 挂起这个 Run：转 waiting、发 park.opened，等外部经 unpark 送来一个符合 schema（JSON Schema）的值并返回它；
    * 被撤回时抛异常。payload 随 park.opened 交给外部，内核不解释（3.5）。
-   * 一般不直接用，而是调 park Operation（ctx.ops.harness.park），好让装饰器看得到这次挂起。装饰器的 ctx 没有它。
+   * 一般不直接用，而是调 park Operation（ctx.ops.harness.park），好让装饰器看得到这次挂起。装饰器的 ctx 没有它；
+   * script 包的 Operation 调它抛异常：它们只能调 Operation。
    */
   park(req: { schema: Record<string, unknown>; payload: unknown }): Promise<unknown>;
 };

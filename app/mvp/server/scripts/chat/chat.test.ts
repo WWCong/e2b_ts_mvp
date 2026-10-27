@@ -4,7 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { Kernel, loadPlugin, op, type HarnessEvent } from "stdlib";
+import { Kernel, loadPlugin, loadScript, op, type HarnessEvent } from "stdlib";
 import { localDir } from "stdlib/infra/volume";
 
 let dir: string;
@@ -12,12 +12,12 @@ let file: string;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "chat-"));
-  // 持久状态的根是 dir/state；chat 拿到的是其中属于它的一块
-  file = join(dir, "state", "store", "chat", "conversation.json");
+  // 持久状态的根是 dir/state；对话历史存在 kv 那块里属于 chat 的键下
+  file = join(dir, "state", "store", "kv", "chat", "conversation.json");
 });
 
 /**
- * 假的 agent：回答「答：这句」，历史追加这一问一答；「坏」就失败，「等等」先 park 等外部的值。
+ * 假的 agent（原生、公开，script 才调得到）：回答「答：这句」，历史追加这一问一答；「坏」就失败，「等等」先 park 等外部的值。
  * prompts 记下每次收到的这一句与带来的历史条数
  */
 async function setup(journalDir?: string) {
@@ -29,6 +29,8 @@ async function setup(journalDir?: string) {
   kernel.use("agent", {
     operations: {
       assist: op({
+        usage: "假的 agent",
+        public: true,
         input: z.object({ prompt: z.string(), images: z.array(z.any()).default([]), history: z.array(z.any()).default([]) }),
         impl: async (ctx, { prompt, images, history }) => {
           prompts.push([prompt, history.length]);
@@ -41,14 +43,15 @@ async function setup(journalDir?: string) {
       }),
     },
   });
-  await loadPlugin(kernel, import.meta.dir, {}, { state: localDir(join(dir, "state")) });
+  await loadPlugin(kernel, "stdlib/plugins/kv", {}, { state: localDir(join(dir, "state")) });
+  await loadScript(kernel, import.meta.dir);
   const roots = await kernel.boot();
   const run = (name: string, input: unknown) => kernel.reap(kernel.submit(name, input));
-  const saved = () => (existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as { history: unknown[] }).history : undefined);
+  const saved = () => (existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as unknown[]) : undefined);
   return { kernel, events, prompts, sentImages, roots, run, saved };
 }
 
-describe("chat 插件", () => {
+describe("chat", () => {
   test("说两句：每轮带上之前的历史交给 agent，更新后的历史存进文件，返回回答；开场白报出有多少条", async () => {
     const { prompts, run, saved } = await setup();
     expect(await run("chat_greet", {})).toEqual({ ok: true, value: "" });
@@ -74,15 +77,15 @@ describe("chat 插件", () => {
     );
   });
 
-  test("一轮三步都是子调用：读历史、agent、存历史", async () => {
+  test("一轮三步都是子调用：从 kv 读历史、agent、存回 kv", async () => {
     const { events, run } = await setup();
     await run("chat_say", { text: "你好" });
 
     expect(events.filter((e) => e.type === "run.started").map((e) => [e.operation, e.depth])).toEqual([
       ["chat_say", 0],
-      ["chat_load", 1],
+      ["kv_get", 1],
       ["agent_assist", 1],
-      ["chat_save", 1],
+      ["kv_set", 1],
     ]);
   });
 
@@ -122,6 +125,6 @@ describe("chat 插件", () => {
     two.kernel.unpark(park()!.runId, "好了");
     expect(await two.kernel.reap(two.roots[0]!)).toEqual({ ok: true, value: "答：等等" });
     expect(two.saved()).toHaveLength(2);
-    expect(two.events.filter((e) => e.type === "run.started").map((e) => e.operation)).toEqual(["chat_say", "agent_assist", "chat_save"]);
+    expect(two.events.filter((e) => e.type === "run.started").map((e) => e.operation)).toEqual(["chat_say", "agent_assist", "kv_set"]);
   });
 });

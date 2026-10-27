@@ -13,7 +13,7 @@ import {
   type ToolResultMessage,
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
-import { Kernel, loadPlugin, type HarnessEvent, type Infra } from "stdlib";
+import { Kernel, loadPlugin, loadScript, type HarnessEvent, type Infra } from "stdlib";
 import { piLlm } from "stdlib/infra/llm";
 import { localDir } from "stdlib/infra/volume";
 import type { Answer } from "stdlib/plugins/ui";
@@ -35,10 +35,10 @@ beforeEach(async () => {
 });
 
 /**
- * 与入口相同的装配：基建的工作区是 workspace，模型后端用 faux 模型；agent 是 agent 插件的配置。
+ * 与入口相同的装配：基建的工作区是 workspace，模型后端用 faux 模型。
  * 每开一个 park，人从 answers 里取一个回答；没有了就不答，park 一直等着
  */
-async function boot(journalDir?: string, agent: { compactOver?: number } = {}) {
+async function boot(journalDir?: string) {
   const k = new Kernel({ journalDir });
   const log: HarnessEvent[] = [];
   k.events.subscribe((e) => log.push(e));
@@ -51,8 +51,8 @@ async function boot(journalDir?: string, agent: { compactOver?: number } = {}) {
   };
   await infra.workspace!.open();
   for (const pkg of ["harness", "time", "ui"]) await loadPlugin(k, `stdlib/plugins/${pkg}`);
-  for (const pkg of ["fs", "model"]) await loadPlugin(k, join(import.meta.dir, "..", pkg), {}, infra);
-  await loadPlugin(k, join(import.meta.dir, "..", "agent"), agent);
+  for (const pkg of ["fs", "model"]) await loadPlugin(k, join(import.meta.dir, "..", "..", "plugins", pkg), {}, infra);
+  await loadScript(k, import.meta.dir);
   const roots = await k.boot();
   return { kernel: k, events: log, roots };
 }
@@ -259,12 +259,11 @@ describe("多轮对话", () => {
 
 describe("压缩历史", () => {
   test("历史超过阈值：这一轮开头先压缩，交给模型的是压缩后的历史，出参的 history 从它开始", async () => {
-    // 阈值取 1：只要轮数超过 model_compact 缺省保留的 2 轮就压
-    ({ kernel } = await boot(undefined, { compactOver: 1 }));
+    // 第一句就超过阈值（6 万多个汉字，估计一字一个 token）：只要轮数超过 model_compact 缺省保留的 2 轮就压
     faux.setResponses([step(fauxText("答一")), step(fauxText("答二")), step(fauxText("答三")), step(fauxText("摘要：问过一")), step(fauxText("答四"))]);
 
     let history: Message[] = [];
-    for (const prompt of ["问一", "问二", "问三"]) {
+    for (const prompt of [`问一${"长".repeat(60_000)}`, "问二", "问三"]) {
       const r = await assist(prompt, history);
       if (!r.ok) throw new Error(r.reason);
       history = (r.value as { history: Message[] }).history;

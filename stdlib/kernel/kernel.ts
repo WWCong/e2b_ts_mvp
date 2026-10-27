@@ -1,6 +1,6 @@
 /**
- * 内核：注册表、插件与生命周期、Run 的创建与执行、挂起，对外的调用、收割、送值与撤回、取消、关停接口。
- * 内核不注册任何 Operation，注册表里的全部来自装载的插件；park 的 Operation 形式是 harness 插件的 harness_park。
+ * 内核：注册表、插件与 script 包、生命周期、Run 的创建与执行、挂起，对外的调用、收割、送值与撤回、取消、关停接口。
+ * 内核不注册任何 Operation，注册表里的全部来自装载的包；park 的 Operation 形式是 harness 插件的 harness_park。
  * 握着内核的只有宿主（host.ts）与测试；服务接口拿到的是收窄了的对外接口（outside），插件什么也拿不到。
  */
 
@@ -8,7 +8,7 @@ import { z } from "zod";
 import { runChain, type DecoratorCtx, type DecoratorDef } from "./chain";
 import type { ApiInfo, Outside, ParkInfo, RunInfo } from "./outside";
 import { EventStream, notify, type EventBody, type HarnessEvent } from "./events";
-import { AFTER, EVENT_HOOKS, PLUGIN_KEYS, type BeforeEvent, type BeforeHook, type PluginObject } from "./plugin";
+import { AFTER, EVENT_HOOKS, PLUGIN_KEYS, SCRIPT_KEYS, type BeforeEvent, type BeforeHook, type PluginObject, type ScriptObject } from "./plugin";
 import { checkName, checkPackageName, packageOf } from "./names";
 import { topo } from "./order";
 import { calls } from "./ops";
@@ -21,15 +21,19 @@ import { inSurface, type Surface } from "./surface";
 export type OperationImpl = (ctx: Ctx, input: any) => Promise<unknown>;
 
 /**
- * 注册表里的一项 Operation。插件用 op() 声明，kernel.use 补上名字「包名_键名」（plugin.ts、names.ts）。
+ * 注册表里的一项 Operation。包里用 op() 声明，kernel.use / useScript 补上名字「包名_键名」（plugin.ts、names.ts）。
  * 后续加入：limits。
  */
 export type Operation = Surface & {
   name: string;
   /** 用法说明：交给模型时即工具的 description */
   usage?: string;
-  /** 公开的才会作为工具交给模型（7.2）；缺省不公开 */
+  /** 公开（进公开表，7.2）：script 能调，缺省也作为工具交给模型；缺省不公开 */
   public?: boolean;
+  /** 公开的写 false：不交给模型（8.1 的「不含 model 包自身」，这里由 Operation 自己声明） */
+  tool?: boolean;
+  /** script 包的：实现只能调公开的 Operation，不能直接挂起（3.1、7.5） */
+  script?: boolean;
   /** 能对外：服务接口只能把声明了它的列进 expose；缺省不能。api 的必须写 usage 与 output */
   api?: boolean;
   /** 出参契约：写了就在返回前按它校验，调用方拿到解析后的值 */
@@ -104,9 +108,9 @@ type Phase = "assembling" | "booting" | "running" | "stopping";
 export class Kernel {
   readonly events: EventStream;
   private phase: Phase = "assembling";
-  /** 包名 → 插件对象，按装载顺序 */
+  /** 包名 → 插件对象，按装载顺序。script 包也在这里（只有 requires 与 operations，没有挂点），一起查依赖 */
   private readonly plugins = new Map<string, PluginObject>();
-  /** 启动时排好：插件按依赖的先后（依赖在前，同级按装载顺序） */
+  /** 启动时排好：包按依赖的先后（依赖在前，同级按装载顺序） */
   private sorted: string[] = [];
   /** 启动时排好：每个事件挂点上，实现了它的插件的先后 */
   private readonly hookOrder = new Map<string, string[]>();
@@ -146,12 +150,7 @@ export class Kernel {
    * 只能在 boot 之前：boot 时按依赖排好先后，再调它的 onStart、接上它的挂点
    */
   use(pkg: string, plugin: PluginObject): void {
-    if (this.phase !== "assembling") throw new Error(`cannot use ${pkg}: harness is ${this.phase}`);
-    checkPackageName(pkg);
-    if (this.plugins.has(pkg)) throw new Error(`duplicate plugin: ${pkg}`);
-    for (const key of Object.keys(plugin)) {
-      if (!PLUGIN_KEYS.has(key)) throw new Error(`${pkg}: unknown key in plugin object: ${key}`);
-    }
+    this.checkPackage(pkg, plugin, PLUGIN_KEYS, "plugin");
     for (const hook of Object.keys(plugin.order ?? {})) {
       if (!EVENT_HOOKS.includes(hook)) throw new Error(`${pkg}: order only applies to event hooks, got ${hook}`);
     }
@@ -164,6 +163,29 @@ export class Kernel {
     this.plugins.set(pkg, plugin);
   }
 
+  /**
+   * 装上一个 script 包（应用层：编排，loader 交来）。它的 Operation 都公开：script 包导出的全部进公开表（7.2）。
+   * 实现发起的调用只能调公开的（callChild 查），不能直接挂起（ctx.park）。只能在 boot 之前
+   */
+  useScript(pkg: string, script: ScriptObject): void {
+    this.checkPackage(pkg, script, SCRIPT_KEYS, "script");
+    for (const [key, decl] of Object.entries(script.operations)) {
+      const name = `${pkg}_${key}`;
+      if (decl.public === false) throw new Error(`script operations are public: ${name}`);
+      this.register({ name, ...decl, public: true, script: true });
+    }
+    this.plugins.set(pkg, { requires: script.requires });
+  }
+
+  private checkPackage(pkg: string, object: object, keys: ReadonlySet<string>, kind: string): void {
+    if (this.phase !== "assembling") throw new Error(`cannot use ${pkg}: harness is ${this.phase}`);
+    checkPackageName(pkg);
+    if (this.plugins.has(pkg)) throw new Error(`duplicate plugin: ${pkg}`);
+    for (const key of Object.keys(object)) {
+      if (!keys.has(key)) throw new Error(`${pkg}: unknown key in ${kind} object: ${key}`);
+    }
+  }
+
   /** 名字须合命名规则；公开与 api 的 Operation 须写 usage，api 的还须写 output；它们的 schema 转不成 JSON Schema 的（如 z.date()）在这里就报错 */
   register(op: Operation): void {
     checkName(op.name);
@@ -172,7 +194,7 @@ export class Kernel {
       if (!op.usage) throw new Error(`public operation needs usage: ${op.name}`);
       // io: "input" 按调用方要填的形状生成：带默认值的字段是可选的
       const inputSchema = z.toJSONSchema(op.input, { io: "input" }) as Record<string, unknown>;
-      this.tools.set(op.name, { name: op.name, description: op.usage, inputSchema });
+      if (op.tool !== false) this.tools.set(op.name, { name: op.name, description: op.usage, inputSchema });
     }
     if (op.api) {
       if (!op.usage) throw new Error(`api operation needs usage: ${op.name}`);
@@ -525,9 +547,9 @@ export class Kernel {
 
   /**
    * ctx.call 的实现：发起 caller 的子调用并等它返回。
-   * 给了 surface 就检查目标在不在里面；装饰器发起的调用不给。
+   * 实现发起的给它的 Operation：查目标在不在它的能力面里，它是 script 的还查目标公开不公开；装饰器发起的调用不给、不查。
    */
-  private callChild(caller: LiveRun, name: string, input: unknown, surface?: Surface): Promise<Result> {
+  private callChild(caller: LiveRun, name: string, input: unknown, op?: Operation): Promise<Result> {
     const { run } = caller;
     const alive = run.status === "running" || run.status === "waiting";
     if (alive && this.phase === "stopping") return this.hold(caller);
@@ -550,9 +572,12 @@ export class Kernel {
       if (same.child) resume = this.resume(same.child, caller.logs!);
     }
 
+    // script 只看得到公开表（7.2）；没有这个 Operation 的照常由 admit 拒绝
+    const hidden = op?.script && this.operations.has(name) && !this.operations.get(name)!.public;
     let admitted: Admitted | Rejected;
     if (!alive) admitted = reject("kernel", `caller is ${run.status}`);
-    else if (surface && !inSurface(surface, name)) admitted = reject("kernel", `${name} is not in the surface of ${run.operation}`);
+    else if (op && !inSurface(op, name)) admitted = reject("kernel", `${name} is not in the surface of ${run.operation}`);
+    else if (hidden) admitted = reject("kernel", `${name} is not public: ${run.operation} is a script`);
     else admitted = this.admit(name, input, run, resume);
     if (!("ok" in admitted)) admitted = this.before("beforeRunStart", this.started(admitted, seq)) ?? admitted;
 
@@ -655,10 +680,11 @@ export class Kernel {
     const ctx: Ctx = {
       runId,
       attempt,
+      callerPackage: parent && packageOf(parent.run.operation),
       ...calls((name, input) => this.callChild(live, name, input, op)),
       signal,
       tools: () => this.toolsIn(op),
-      park: (req) => this.park(live, req),
+      park: (req) => (op.script ? Promise.reject(new Error("a script cannot park directly: call an operation")) : this.park(live, req)),
     };
     const decoratorCtx: DecoratorCtx = {
       runId,
@@ -715,10 +741,12 @@ export class Kernel {
     this.artifactDigest ??= digest({
       operations: [...this.operations.values()]
         .sort((a, b) => (a.name < b.name ? -1 : 1))
-        .map(({ name, usage, public: isPublic, api, decorators, only, exclude, impl }) => [
+        .map(({ name, usage, public: isPublic, tool, script, api, decorators, only, exclude, impl }) => [
           name,
           usage,
           isPublic,
+          tool,
+          script,
           api,
           decorators,
           only,
@@ -733,7 +761,7 @@ export class Kernel {
     return this.artifactDigest;
   }
 
-  /** 能力面里的公开 Operation，按名字排序 */
+  /** 能力面里交给模型的公开 Operation（不含写了 tool: false 的），按名字排序 */
   private toolsIn(surface: Surface): ToolSpec[] {
     return [...this.tools.values()]
       .filter((tool) => inSurface(surface, tool.name))

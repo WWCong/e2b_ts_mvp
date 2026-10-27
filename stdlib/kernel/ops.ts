@@ -1,11 +1,11 @@
 /**
- * 调别的 Operation 的类型：注册表 Packages 由应用的装配侧补全（包名 → 插件声明的类型，import type 即可），
+ * 调别的 Operation 的类型：注册表 Packages 由应用的装配侧补全（包名 → 插件或 script 包声明的类型，import type 即可），
  * ctx.ops 与 ctx.call 据它推出入参与结果的类型。只在编译期；运行时照常经内核按名字调用，
  * 目标在不在、在不在能力面、入参对不对仍由内核检查。
  */
 
 import type { z } from "zod";
-import type { OpDecl, PluginDecl } from "./plugin";
+import type { OpDecl, PluginDecl, ScriptDecl } from "./plugin";
 import type { Result } from "./run";
 
 /**
@@ -15,7 +15,8 @@ import type { Result } from "./run";
 export interface Packages {}
 
 type Pkg = keyof Packages & string;
-type OperationsOf<D> = D extends PluginDecl<any, infer P> ? (P extends { operations: infer M } ? M : {}) : {};
+type OperationsOf<D> = D extends PluginDecl<any, infer P> ? OperationsIn<P> : D extends ScriptDecl<infer P> ? OperationsIn<P> : {};
+type OperationsIn<P> = P extends { operations: infer M } ? M : {};
 /** 调用方要填的入参：带默认值的字段可不填 */
 type InputOf<D> = D extends { input: z.ZodType<any, infer I> } ? I : never;
 type OutputOf<D> = D extends { impl: (...args: any[]) => Promise<infer O> } ? O : never;

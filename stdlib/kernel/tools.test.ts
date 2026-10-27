@@ -47,6 +47,24 @@ describe("ctx.tools()", () => {
     });
   });
 
+  test("公开但写了 tool: false 的不交给模型，照常能调", async () => {
+    const kernel = await setup();
+    kernel.register({ name: "fs_stat", usage: "看文件", public: true, tool: false, input: z.null(), impl: async () => "stat" });
+    let tools: string[] = [];
+    kernel.register({
+      name: "demo_agent",
+      input: z.null(),
+      only: ["fs"],
+      impl: async (ctx) => {
+        tools = ctx.tools().map((t) => t.name);
+        return ctx.call("fs_stat", null);
+      },
+    });
+
+    expect(await kernel.reap(kernel.submit("demo_agent", null))).toEqual({ ok: true, value: { ok: true, value: "stat" } });
+    expect(tools).toEqual(["fs_list", "fs_write"]);
+  });
+
   test("装饰器的 ctx 没有 tools()：类型上就不给", async () => {
     const kernel = await setup();
     let hasTools: boolean | undefined;

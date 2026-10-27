@@ -14,6 +14,9 @@ export async function check(ctx: Ctx) {
   if (list.ok) list.value satisfies string;
   const now = await ctx.call("time_now", null);
   if (now.ok) now.value satisfies number;
+  // script 包的 Operation 一样从注册表推出
+  const turn = await ctx.ops.agent.assist({ prompt: "你好" });
+  if (turn.ok) turn.value.answer satisfies string | null;
 
   // 名字是变量（模型挑的工具）：照常调用，入参与结果是 unknown
   const name: string = "fs_read";
@@ -36,8 +39,8 @@ export async function check(ctx: Ctx) {
 
 // 装配配置的 expose 只能填声明了 api 的 Operation
 export const exposed: ApiName[] = ["chat_say", "chat_reset", "chat_greet"];
-// @ts-expect-error chat_load 没声明 api，不能对外
-export const internal: ApiName = "chat_load";
+// @ts-expect-error agent_assist 没声明 api，不能对外
+export const internal: ApiName = "agent_assist";
 // @ts-expect-error 拼错的名字
 export const typo: ApiName = "chat_sya";
 

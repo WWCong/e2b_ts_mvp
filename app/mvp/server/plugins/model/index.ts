@@ -2,12 +2,13 @@
  * model 插件：原语 model.complete 与 model.compact（8.1、8.3）。调模型经注入的基建 llm（模型后端）：
  * 用哪家、哪个模型、凭据都在装配配置里，这里只管拼请求、处理工具与压缩历史。消息格式用 pi-ai 的。
  * Operation 名本身就合模型对工具名的要求（names.ts），工具名、历史与事件处处同名，不做任何转写。
- * 后续加入：把 usage 记到 Run 上；渲染 run.context；公开给 script 包。
+ * 两个都公开（script 包能调，如 agent），不交给模型当工具（8.1：工具不含 model 包自身）。
+ * 后续加入：把 usage 记到 Run 上；渲染 run.context。
  */
 
 import type { Message, Tool, ToolCall, UserMessage } from "@earendil-works/pi-ai";
 import { z } from "zod";
-import { op, plugin, type ToolSpec } from "stdlib";
+import { op, opaque, plugin, type ToolSpec } from "stdlib";
 import { estimateTokens, splitAt, transcript, withSummary } from "./compact";
 
 const SUMMARIZE =
@@ -25,10 +26,13 @@ export default plugin({ needs: ["llm"] }, (_config, { llm }) => {
   return {
     operations: {
       complete: op({
+        usage: "调一次模型：给系统提示、消息与工具，返回这一轮的消息、要调的工具与回答",
+        public: true,
+        tool: false,
         input: z.object({
           systemPrompt: z.string().optional(),
           /** pi-ai 的消息格式，原样发给模型 */
-          messages: z.array(z.custom<Message>()),
+          messages: z.array(opaque<Message>()),
           /** 通常就是调用方的 ctx.tools() */
           tools: z.array(toolSpec).default([]),
         }),
@@ -54,8 +58,11 @@ export default plugin({ needs: ["llm"] }, (_config, { llm }) => {
        * 轮数不超过 keep 时没有可压的，原样返回
        */
       compact: op({
+        usage: "历史估计超过 over 个 token 时，把最近 keep 轮之前的写成摘要，返回压缩后的历史",
+        public: true,
+        tool: false,
         input: z.object({
-          history: z.array(z.custom<Message>()),
+          history: z.array(opaque<Message>()),
           /** 阈值：历史估计超过这么多 token 才压 */
           over: z.number().int().positive(),
           /** 最近几轮原样保留（一轮从一条用户消息开始） */
