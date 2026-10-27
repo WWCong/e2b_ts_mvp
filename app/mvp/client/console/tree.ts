@@ -3,8 +3,7 @@
  * 各 Operation 的入参、出参怎么摘要由应用给（brief），只影响显示；没给或对不上时退回截断的 JSON。
  */
 
-import { isToolContent } from "../../content";
-import type { HarnessEvent } from "../../kernel/events";
+import { isToolContent, type HarnessEvent } from "stdlib";
 
 /** 一行摘要；返回 undefined 用缺省的 */
 export type Brief = (operation: string, side: "input" | "output", value: unknown) => string | undefined;

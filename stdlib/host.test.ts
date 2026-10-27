@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { httpClient, reachable } from "./clients/http";
+import type { ParkInfo, RunInfo } from "./kernel/outside";
 
 let dir: string;
 let socket: string;
@@ -23,14 +23,40 @@ async function launch(...args: string[]) {
   return { proc, exited };
 }
 
+async function reachable() {
+  try {
+    await fetch("http://harness/operations", { unix: socket, signal: AbortSignal.timeout(1000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function serving(proc: Bun.Subprocess) {
-  while (!(await reachable(socket))) {
+  while (!(await reachable())) {
     if (proc.exitCode !== null) throw new Error("harness exited before serving");
     await Bun.sleep(10);
   }
 }
 
-const client = () => httpClient({ socket, name: "test" });
+/** 直接用 HTTP 服务接口（客户端是应用的事，这里不依赖） */
+const request = async <T>(method: string, path: string, body?: unknown) => {
+  const res = await fetch(`http://harness${path}`, {
+    unix: socket,
+    method,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: { "harness-client": "test" },
+  });
+  return (await res.json()) as T;
+};
+
+const client = () => ({
+  call: (op: string, input: unknown) => request("POST", `/operations/${op}`, input),
+  runs: () => request<RunInfo[]>("GET", "/runs"),
+  result: (runId: string) => request("GET", `/runs/${runId}`),
+  parks: () => request<ParkInfo[]>("GET", "/parks"),
+  answer: (id: string, value: unknown) => request("POST", `/parks/${id}`, { value }),
+});
 
 describe("宿主", () => {
   test("在 socket 上对外服务，一直跑到收到信号；SIGINT 优雅关停，删掉 socket，打印在哪服务", async () => {

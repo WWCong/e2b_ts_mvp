@@ -1,5 +1,5 @@
 /**
- * 终端客户端：在终端里连续对话。它在 Harness 外面，经 HTTP 服务接口（stdlib/clients/http.ts）用 Harness，
+ * 终端界面：在终端里连续对话。它在 Harness 外面，经 HTTP 服务接口（../http.ts）用 Harness，
  * 能做的就是任何客户端能做的：调 expose 里的 Operation、回答问题、看事件。
  * - 普通一行交给 say（入参 { text }），「/命令」调对应的 Operation（入参 {}），/exit、输入结束或 Ctrl-C 退出
  * - 要人回答的问题（park，ui 插件约定的格式）一次问一个：事件流里新开的，加上连上时已经在等的
@@ -12,7 +12,7 @@
  */
 
 import { createInterface } from "node:readline";
-import type { Result } from "../../kernel/run";
+import type { Result } from "stdlib";
 import type { Client } from "../http";
 import { lineReader, parse, render, type ReadLine } from "./prompt";
 import { eventTree, type Brief } from "./tree";

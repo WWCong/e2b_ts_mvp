@@ -1,4 +1,4 @@
-/** Harness（main.ts）与终端客户端（console.ts、start.ts）共用的位置：持久状态的目录与服务接口的 socket */
+/** 服务端（server/main.ts）与客户端（client/main.ts、start.ts）共用的位置：持久状态的目录与服务接口的 socket */
 
 import { join } from "node:path";
 

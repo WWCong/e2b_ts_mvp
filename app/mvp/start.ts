@@ -1,5 +1,5 @@
 /**
- * bun start：Harness 没在跑就起一个（与 bun run serve 同一份装配，main.ts），再开终端客户端（console.ts）；
+ * bun start：MVP 的服务端（server/main.ts，即它的 Harness）没在跑就起一个，再开它的客户端（client/main.ts）；
  * 终端退出时，自己起的 Harness 一并优雅关停——进度在写前日志里，再 bun start 接着做；关停中再按 Ctrl-C 强杀。
  * Harness 已经在跑的（另一个终端里 bun run serve 起的），只开终端，退出时不动它。
  * 起的 Harness 在另一个进程组里：终端里的 Ctrl-C 只到这里，由这里决定怎么停它。它的标准错误照常打到终端。
@@ -7,22 +7,25 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
-import { reachable } from "stdlib/clients/http";
-import { chat } from "./console";
+import { chat } from "./client/main";
+import { reachable } from "./client/http";
 import { socket } from "./paths";
 
 const quit = new AbortController();
 let server: ChildProcess | undefined;
 let stopping = false;
-process.on("SIGINT", () => {
-  // 先让终端退出；关停中再按一次：强杀（Harness 收到第二个信号就不再等在途的调用）
-  if (!stopping) quit.abort();
-  else server?.kill("SIGTERM");
-});
+// Ctrl-C；被 kill 或终端关了也一样，免得自己起的 Harness 没人停
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.on(signal, () => {
+    // 先让终端退出；关停中再来一次：强杀（Harness 收到第二个信号就不再等在途的调用）
+    if (!stopping) quit.abort();
+    else server?.kill("SIGTERM");
+  });
+}
 
 let exited: Promise<unknown> = Promise.resolve();
 if (!(await reachable(socket))) {
-  server = spawn(process.execPath, [join(import.meta.dir, "main.ts")], { stdio: ["ignore", "ignore", "inherit"], detached: true });
+  server = spawn(process.execPath, [join(import.meta.dir, "server", "main.ts")], { stdio: ["ignore", "ignore", "inherit"], detached: true });
   const child = server;
   exited = new Promise((resolve) => child.once("exit", resolve));
   // 等它开始服务；起不来就退出（原因它自己打在标准错误上）

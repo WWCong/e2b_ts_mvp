@@ -3,11 +3,9 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import type { HarnessEvent } from "../kernel/events";
-import { Kernel } from "../kernel/kernel";
-import { op } from "../kernel/plugin";
-import { httpService } from "../serve/http";
-import type { Service } from "../serve/service";
+import { Kernel, op, type HarnessEvent } from "stdlib";
+import { httpService } from "stdlib/serve/http";
+import type { Service } from "stdlib/serve/service";
 import { httpClient, reachable } from "./http";
 
 const services: Service[] = [];

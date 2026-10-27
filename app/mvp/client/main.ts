@@ -1,15 +1,16 @@
 /**
- * MVP 的终端客户端：经 STATE_DIR 下的 socket 连上 Harness（bun run serve 起的，或 bun start 一起起的），在终端里对话。
+ * MVP 的客户端（bun run chat）：经 STATE_DIR 下的 socket 连上 MVP 的 Harness（server/，bun run serve 起的，
+ * 或 bun start 一起起的），在终端里对话。
  * 它在 Harness 外面，和网页、别的系统一样只经 HTTP 服务接口：普通一行调 chat_say，/new 调 chat_reset，开场调 chat_greet；
  * 要人回答的问题在这里问；事件流画成 Run 树（摘要规则见 brief.ts）。
  * 用法：bun run chat；bun run chat "第一句话"。/exit、Ctrl-D 或 Ctrl-C 退出——只是客户端走了，
  * 在途的那一轮在 Harness 里接着做，再连上时先问还在等的问题、再显示那一轮的结果。
  */
 
-import { runConsole } from "stdlib/clients/console";
-import { httpClient, reachable } from "stdlib/clients/http";
+import { socket } from "../paths";
 import { brief } from "./brief";
-import { socket } from "./paths";
+import { runConsole } from "./console";
+import { httpClient, reachable } from "./http";
 
 /** 开一个终端客户端，退出时返回；signal 让它退出 */
 export function chat(options: { first?: string; signal?: AbortSignal } = {}) {

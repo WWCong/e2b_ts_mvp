@@ -3,7 +3,7 @@
  */
 
 import type { Interface } from "node:readline";
-import type { Answer, Question } from "../../plugins/ui";
+import type { Answer, Question } from "stdlib/plugins/ui";
 
 const HINT_OPTIONS = "输入序号或选项选择，后面可空格接补充说明；也可以直接写别的回答。/skip [原因] 不回答";
 const HINT_TEXT = "直接写回答。/skip [原因] 不回答";

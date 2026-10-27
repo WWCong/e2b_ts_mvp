@@ -9,7 +9,8 @@
  * - GET  /runs/:id          等这棵树结束并取走结果：{ runId, result }；等的途中断开不取
  * - GET  /parks             等待中的问题：{ id, root, operation, schema, payload }
  * - POST /parks/:id         回答 { value }，或撤回 { withdraw: 原因 }
- * - GET  /events            事件流（SSE），每条 data 是一个事件；只推连上之后的，现状用 /runs 与 /parks 取
+ * - GET  /events            事件流（SSE），每条 data 是一个事件；只推连上之后的，现状用 /runs 与 /parks 取。
+ *                           没有事件时每隔几秒发一行注释，免得被当成空闲连接断开
  * 调用被拒（result.ok 为 false）也是 200：拒绝是调用的结果（R16）。请求本身不成立（不是 api、入参不符、
  * 没有这个 park、正在关停等）是 400，没对外的 Operation、没有这棵树或这个路由是 404，响应体 { error }。
  * 监听 Unix socket（本地；文件权限只给本用户）或 TCP（缺省只绑 127.0.0.1）。还没有认证，TCP 不要对外开放。
@@ -34,6 +35,16 @@ export async function httpService(config: HttpConfig): Promise<Service> {
   let server: ReturnType<typeof Bun.serve> | undefined;
   /** 连着的事件流 */
   const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
+  const broadcast = (chunk: Uint8Array) => {
+    for (const stream of streams) {
+      try {
+        stream.enqueue(chunk);
+      } catch {
+        streams.delete(stream);
+      }
+    }
+  };
+  let heartbeat: Timer | undefined;
 
   return {
     address: socket ? `unix:${socket}` : `http://${hostname}:${port}`,
@@ -46,24 +57,18 @@ export async function httpService(config: HttpConfig): Promise<Service> {
         if (!outside) outsides.set(origin, (outside = ctx.outside(origin)));
         return outside;
       };
-      ctx.subscribe((event: HarnessEvent) => {
-        const chunk = encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
-        for (const stream of streams) {
-          try {
-            stream.enqueue(chunk);
-          } catch {
-            streams.delete(stream);
-          }
-        }
-      });
+      ctx.subscribe((event: HarnessEvent) => broadcast(encoder.encode(`data: ${JSON.stringify(event)}\n\n`)));
+      // 事件流可能很久没有事件，Bun 会当它空闲断开（缺省 10 秒，Unix socket 上也是）：隔几秒发一行注释
+      heartbeat = setInterval(() => broadcast(encoder.encode(": \n\n")), 5_000);
       const fetch = (req: Request) => route(req, outsideOf(req), expose, streams);
-      // 等结果的请求与事件流都可能很久不说话：TCP 关掉空闲超时（Unix socket 本就没有）
+      // 等结果的请求也可能很久不说话：TCP 关掉空闲超时
       server = socket ? Bun.serve({ unix: socket, fetch }) : Bun.serve({ port, hostname, idleTimeout: 0, fetch });
       if (socket) chmodSync(socket, 0o600);
     },
     stop(closeConnections) {
       server?.stop(closeConnections);
       if (!closeConnections) return;
+      clearInterval(heartbeat);
       for (const stream of streams) stream.close();
       streams.clear();
       if (socket) rmSync(socket, { force: true });

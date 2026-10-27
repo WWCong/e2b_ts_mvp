@@ -1,12 +1,11 @@
 /**
- * HTTP 服务接口的客户端（服务端见 stdlib/serve/http.ts）：UI、脚本、别的系统都经它用 Harness。
+ * MVP 客户端这一侧的 HTTP 客户端：经服务接口（服务端见 stdlib/serve/http.ts）用 Harness。
+ * 协议是通用的，以后别的应用也要时再抽成共享的包。
  * 它在 Harness 外面，只能做服务接口允许的事：调 expose 里的 Operation、取结果、回答问题、看事件。
  * client 是自报的名字，记进它发起的树的 origin（http:名字），重连后据它认出自己上次发起的树。
  */
 
-import type { HarnessEvent } from "../kernel/events";
-import type { ApiInfo, ParkInfo, RunInfo } from "../kernel/outside";
-import type { Result } from "../kernel/run";
+import type { ApiInfo, HarnessEvent, ParkInfo, Result, RunInfo } from "stdlib";
 
 export type Client = {
   /** 自报的名字 */
