@@ -6,6 +6,7 @@
  * - state：持久状态，宿主切成互不相干的几块：内核的写前日志在 journal/（要求有 localPath，日志同步落盘）；
  *   每个插件的存储在 store/<包名>/，插件声明 store 拿到的就是自己那块，看不到别的插件的，也碰不到日志
  * 换实现（如 workspace 换成 rclone+FUSE 挂载）只改装配配置，插件不动。
+ * 宿主自己还给一样（不在装配配置里写）：scripts，装上的 script 包（stdlib/script/installed.ts）。
  */
 
 import type { Llm } from "./llm";
@@ -17,17 +18,26 @@ export type { Stat, Volume } from "./volume";
 /** 装配配置里的基建 */
 export type Infra = { llm?: Llm; workspace?: Volume; state?: Volume };
 
+/**
+ * 装上的 script 包（宿主给）：install 把 from 里的包装上——先在解释器里装载一遍，过了才写进持久状态的
+ * scripts/<包名>/，换进运行中的 Harness（新装或换掉同名的），重启后自动装载。返回它的 Operation 名
+ */
+export type Scripts = { install(pkg: string, from: Volume): Promise<string[]> };
+
+/** 宿主交给装载的：装配配置的基建，加上宿主自己给的 */
+export type Provided = Infra & { scripts?: Scripts };
+
 /** 插件能声明需要的基建，与它拿到的东西 */
-export type Granted = { llm: Llm; workspace: Volume; store: Volume };
+export type Granted = { llm: Llm; workspace: Volume; store: Volume; scripts: Scripts };
 export type Need = keyof Granted;
 
 /** 按插件声明的需要从装配的基建里取：needs 里的装配没提供，装载失败；wants 里的有就给 */
-export function grant(pkg: string, needs: readonly string[], infra: Infra, wants: readonly string[] = []): Partial<Granted> {
+export function grant(pkg: string, needs: readonly string[], infra: Provided, wants: readonly string[] = []): Partial<Granted> {
   const granted: Partial<Granted> = {};
   for (const need of [...needs, ...wants]) {
     let it: Granted[Need] | undefined;
     if (need === "store") it = infra.state?.sub(`store/${pkg}`);
-    else if (need === "llm" || need === "workspace") it = infra[need];
+    else if (need === "llm" || need === "workspace" || need === "scripts") it = infra[need];
     else throw new Error(`${pkg}: unknown need: ${need}`);
     if (it) Object.assign(granted, { [need]: it });
     else if (needs.includes(need)) throw new Error(`${pkg} needs ${need === "store" ? "store (from state)" : need}, which the assembly does not provide`);

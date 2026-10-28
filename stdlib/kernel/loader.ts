@@ -6,13 +6,13 @@
  */
 
 import { basename, join } from "node:path";
-import { grant, type Infra } from "../infra";
+import { grant, type Provided } from "../infra";
 import { compileScript, type ScriptLimits } from "../script/sandbox";
 import type { PluginDecl } from "./plugin";
 import type { Kernel } from "./kernel";
 
 /** 装载 dir/index.ts；config 原样交给工厂，infra 里按插件的 needs 取 */
-export async function loadPlugin(kernel: Kernel, dir: string, config: unknown = {}, infra: Infra = {}): Promise<void> {
+export async function loadPlugin(kernel: Kernel, dir: string, config: unknown = {}, infra: Provided = {}): Promise<void> {
   const pkg = basename(dir);
   const mod: { default?: PluginDecl<unknown> } = await import(join(dir, "index.ts"));
   const decl = mod.default;

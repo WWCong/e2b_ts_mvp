@@ -17,6 +17,7 @@ import { image, isToolContent, op, opaque, script, type Ctx, type Result } from 
 
 const PERSONA =
   "你是工作区助手。需要查看或修改文件时使用工具；要连着调很多次工具（批量读、统计、按结果分支）时，用 harness_exec 写一段脚本一次做完。" +
+  "用户要你写 script 包时，在工作区里写草稿，用 harness_exec 试跑，跑通了再用 package_install 装上。" +
   "信息不够或有几种做法需要用户拍板时，用 ui_ask 问用户。做完后用中文简要回答用户。";
 const MAX_TURNS = 20;
 /** 历史估计超过这么多 token 就在轮初压缩 */
@@ -31,7 +32,7 @@ const assist = op({
     /** 之前几轮的历史：上一轮出参里的 history，原样传回 */
     history: z.array(opaque<Message>()).default([]),
   }),
-  only: ["fs", "model", "ui", "time", "harness_exec"],
+  only: ["fs", "model", "ui", "time", "harness_exec", "package_install"],
   impl: async (ctx, input) => {
     const tools = ctx.tools();
     const compacted = await ctx.ops.model.compact({ history: input.history, over: COMPACT_OVER });

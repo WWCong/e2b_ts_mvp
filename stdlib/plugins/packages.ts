@@ -5,6 +5,7 @@
 
 import type harness from "./harness";
 import type kv from "./kv";
+import type pkg from "./package";
 import type time from "./time";
 import type ui from "./ui";
 
@@ -12,6 +13,7 @@ declare module "stdlib" {
   interface Packages {
     harness: typeof harness;
     kv: typeof kv;
+    package: typeof pkg;
     time: typeof time;
     ui: typeof ui;
   }

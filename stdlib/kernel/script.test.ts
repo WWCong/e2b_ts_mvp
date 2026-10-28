@@ -115,8 +115,9 @@ describe("运行中换掉 script 包", () => {
       },
     });
     kernel.useScript("demo", version("v1"));
-    kernel.register({ name: "other_x", input: z.null(), impl: async () => null });
-    kernel.register({ name: "other_tools", input: z.null(), only: ["demo"], impl: async (ctx) => ctx.tools().map((t) => t.name) });
+    kernel.use("other", {
+      operations: { tools: op({ input: z.null(), only: ["demo", "fresh"], impl: async (ctx) => ctx.tools().map((t) => t.name) }) },
+    });
     await kernel.boot();
     const run = (input: unknown = {}) => kernel.reap(kernel.submit("demo_say", input));
     return { kernel, version, run, release: () => release() };
@@ -127,7 +128,7 @@ describe("运行中换掉 script 包", () => {
     const inflight = kernel.submit("demo_say", { wait: true });
     await Bun.sleep(5);
 
-    kernel.replaceScript("demo", version("v2"));
+    kernel.installScript("demo", version("v2"));
     expect(await run()).toEqual({ ok: true, value: "v2" });
     release();
     expect(await kernel.reap(inflight)).toEqual({ ok: true, value: "v1" });
@@ -137,7 +138,7 @@ describe("运行中换掉 script 包", () => {
     const { kernel } = await setup();
     const tools = () => kernel.reap(kernel.submit("other_tools", null));
     expect(await tools()).toEqual({ ok: true, value: ["demo_say"] });
-    kernel.replaceScript("demo", { operations: { hello: op({ usage: "打招呼", input: z.null(), impl: async () => "hi" }) } });
+    kernel.installScript("demo", { operations: { hello: op({ usage: "打招呼", input: z.null(), impl: async () => "hi" }) } });
 
     expect(() => kernel.submit("demo_say", {})).toThrow("unknown operation: demo_say");
     expect(await kernel.reap(kernel.submit("demo_hello", null))).toEqual({ ok: true, value: "hi" });
@@ -147,14 +148,25 @@ describe("运行中换掉 script 包", () => {
   test("新的有问题：抛异常，旧的照旧；只能换装上的 script 包", async () => {
     const { kernel, run } = await setup();
 
-    expect(() => kernel.replaceScript("demo", { requires: ["web"], operations: {} })).toThrow("demo requires web, which is not loaded");
+    expect(() => kernel.installScript("demo", { requires: ["web"], operations: {} })).toThrow("demo requires web, which is not loaded");
     expect(() =>
-      kernel.replaceScript("demo", {
+      kernel.installScript("demo", {
         operations: { a: op({ usage: "a", input: z.null(), impl: async () => 1 }), b: op({ input: z.null(), impl: async () => 2 }) },
       }),
     ).toThrow("public operation needs usage: demo_b");
     expect(await run()).toEqual({ ok: true, value: "v1" });
-    expect(() => kernel.replaceScript("other", { operations: {} })).toThrow("other is not a loaded script package");
+    expect(() => kernel.installScript("other", { operations: {} })).toThrow("other is a plugin, not a script package");
+    expect(() => kernel.installScript("Bad", { operations: {} })).toThrow("invalid package name: Bad");
+  });
+
+  test("装上一个新的 script 包：之后就能调；有问题就什么也没装", async () => {
+    const { kernel } = await setup();
+    expect(() => kernel.installScript("fresh", { requires: ["web"], operations: {} })).toThrow("fresh requires web, which is not loaded");
+    expect(() => kernel.submit("fresh_hi", null)).toThrow("unknown operation: fresh_hi");
+
+    kernel.installScript("fresh", { operations: { hi: op({ usage: "嗨", input: z.null(), impl: async () => "嗨" }) } });
+    expect(await kernel.reap(kernel.submit("fresh_hi", null))).toEqual({ ok: true, value: "嗨" });
+    expect(await kernel.reap(kernel.submit("other_tools", null))).toEqual({ ok: true, value: ["demo_say", "fresh_hi"] });
   });
 });
 

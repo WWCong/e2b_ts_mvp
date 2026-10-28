@@ -5,6 +5,8 @@
  * 启动：先占住服务接口要监听的地址，打开基建（建目录、挂载…），建内核（写前日志在 state 的 journal/），
  * 按顺序装载插件、注入它们声明需要的基建，再装载 script 包，启动（恢复上次没做完的树），最后服务接口开始监听，
  * 每个服务接口只提供它 expose 里列的 Operation。装配配置 watch 时，script 包改了运行中重新装载（插件改了要重启）。
+ * 持久状态的 scripts/ 下是运行中装上的 script 包（stdlib/script/installed.ts），启动时在装配的之后装载；
+ * 宿主把装包的能力（scripts）交给声明需要它的插件。
  * 启停是机器的信号，只在这里处理：收到 SIGINT / SIGTERM 就优雅关停——先停止接新请求，再等在途的调用跑完
  * （最多 graceMs），关停中再收到一次就强杀，内核关停完断开连接、关掉基建（落盘、卸载…），退出进程。进度都在写前日志里，再启动接着做。
  * 后续加入：约定一个退出码表示要重启（harness_restart），由外层重新拉起进程。
@@ -18,6 +20,7 @@ import { Kernel, type KernelConfig } from "./kernel/kernel";
 import { loadPlugin, loadScript } from "./kernel/loader";
 import { packageOf } from "./kernel/names";
 import type { ApiName } from "./kernel/ops";
+import { installedScripts } from "./script/installed";
 import { compileScript } from "./script/sandbox";
 import { httpService, type HttpConfig } from "./serve/http";
 import type { Service } from "./serve/service";
@@ -51,11 +54,15 @@ export async function host(assembly: Assembly): Promise<never> {
   for (const volume of volumes) await volume.open();
 
   const kernel = new Kernel({ ...config, journalDir: journalDir(infra.state) });
+  const reserved = new Set([...plugins.map((item) => basename(typeof item === "string" ? item : item[0])), ...scripts.map((dir) => basename(dir))]);
+  const installedRoot = infra.state?.sub("scripts").localPath;
+  const installed = installedRoot ? installedScripts(kernel, installedRoot, reserved) : undefined;
   for (const item of plugins) {
     const [dir, pluginConfig] = typeof item === "string" ? [item, undefined] : item;
-    await loadPlugin(kernel, dir, pluginConfig, infra);
+    await loadPlugin(kernel, dir, pluginConfig, { ...infra, scripts: installed?.scripts });
   }
   for (const dir of scripts) await loadScript(kernel, dir);
+  await installed?.loadAll();
   // 对外哪些是装配的决定：列的不是 api 的，启动失败
   const apis = new Set(kernel.operationsApi().map((o) => o.name));
   for (const [name, config] of Object.entries(serve)) {
@@ -89,7 +96,7 @@ export async function host(assembly: Assembly): Promise<never> {
 }
 
 /**
- * 盯着一个 script 包的目录：文件变了，等一会儿（一次保存常有几个改动）重新打包、读声明，换进内核（replaceScript）。
+ * 盯着一个 script 包的目录：文件变了，等一会儿（一次保存常有几个改动）重新打包、读声明，换进内核（installScript）。
  * 新的有问题（写错了、对外的 Operation 不再是 api 的等），旧的照旧。结果打在标准错误上
  */
 function watchScript(kernel: Kernel, dir: string, exposed: string[]): FSWatcher {
@@ -100,7 +107,7 @@ function watchScript(kernel: Kernel, dir: string, exposed: string[]): FSWatcher 
       const apis = Object.entries(script.operations).flatMap(([key, op]) => (op.api ? [`${pkg}_${key}`] : []));
       const lost = exposed.filter((name) => packageOf(name) === pkg && !apis.includes(name));
       if (lost.length > 0) throw new Error(`exposed but no longer an api operation: ${lost.join(", ")}`);
-      kernel.replaceScript(pkg, script);
+      kernel.installScript(pkg, script);
       console.error(`harness：script 包 ${pkg} 改过了，已重新装载`);
     } catch (err) {
       console.error(`harness：script 包 ${pkg} 重新装载失败，仍用原来的：${err instanceof Error ? err.message : String(err)}`);

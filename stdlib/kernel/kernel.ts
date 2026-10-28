@@ -114,7 +114,7 @@ export class Kernel {
   private phase: Phase = "assembling";
   /** 包名 → 插件对象，按装载顺序。script 包也在这里（只有 requires，没有挂点），一起查依赖 */
   private readonly plugins = new Map<string, PluginObject>();
-  /** 哪些包是 script 包：运行中可以换掉（replaceScript） */
+  /** 哪些包是 script 包：运行中可以换掉（installScript） */
   private readonly scripts = new Set<string>();
   /** 启动时排好：包按依赖的先后（依赖在前，同级按装载顺序） */
   private sorted: string[] = [];
@@ -182,28 +182,35 @@ export class Kernel {
   }
 
   /**
-   * 换掉一个装上的 script 包（改了代码，运行中重新装载）：它的 Operation 整个换成新的，之后的调用用新的，
-   * 正在跑的 Run 用旧的跑完；新的没有了的 Operation，之后调用即 unknown。
-   * 新的有问题（键不认得、依赖没装、usage 没写、引用的装饰器不在等）就抛异常，旧的照旧
+   * 运行中装上一个 script 包，或换掉已装上的（改了代码重新装载、装上试好的草稿）：它的 Operation 整个换成新的，
+   * 之后的调用用新的，正在跑的 Run 用旧的跑完；新的里没有了的 Operation，之后调用即 unknown。
+   * 新的有问题（名字不合规则、与插件同名、键不认得、依赖没装、usage 没写、引用的装饰器不在等）就抛异常，旧的照旧
    */
-  replaceScript(pkg: string, script: ScriptObject): void {
-    if (this.phase !== "running") throw new Error(`cannot replace ${pkg}: harness is ${this.phase}`);
-    if (!this.scripts.has(pkg)) throw new Error(`${pkg} is not a loaded script package`);
+  installScript(pkg: string, script: ScriptObject): void {
+    if (this.phase !== "running") throw new Error(`cannot install ${pkg}: harness is ${this.phase}`);
+    checkPackageName(pkg);
+    if (this.plugins.has(pkg) && !this.scripts.has(pkg)) throw new Error(`${pkg} is a plugin, not a script package`);
     for (const key of Object.keys(script)) {
       if (!SCRIPT_KEYS.has(key)) throw new Error(`${pkg}: unknown key in script object: ${key}`);
     }
     for (const dep of script.requires ?? []) if (!this.plugins.has(dep)) throw new Error(`${pkg} requires ${dep}, which is not loaded`);
-    const old = { entry: this.plugins.get(pkg)!, operations: this.operationsOf(pkg) };
+    const old = { entry: this.plugins.get(pkg), operations: this.operationsOf(pkg) };
     const remove = () => this.operationsOf(pkg).forEach((op) => this.unregister(op.name));
     remove();
     try {
       this.plugins.set(pkg, { requires: script.requires });
+      this.scripts.add(pkg);
       this.registerScript(pkg, script);
       this.checkDecorators();
     } catch (err) {
       remove();
       old.operations.forEach((op) => this.register(op));
-      this.plugins.set(pkg, old.entry);
+      if (old.entry) {
+        this.plugins.set(pkg, old.entry);
+      } else {
+        this.plugins.delete(pkg);
+        this.scripts.delete(pkg);
+      }
       throw err;
     }
   }
