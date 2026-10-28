@@ -4,6 +4,10 @@ import { z } from "zod";
 import type { HarnessEvent } from "../kernel/events";
 import { Kernel } from "../kernel/kernel";
 import { loadScript } from "../kernel/loader";
+import { mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { QuickJS } from "quickjs-wasi";
+import { loadBase } from "./sandbox";
 
 const fixture = (name: string) => join(import.meta.dir, "__fixtures__", name);
 
@@ -100,5 +104,33 @@ describe("装载", () => {
   test("默认导出不是 script()、schema 转不成 JSON Schema：装载失败", async () => {
     await expect(loadScript(new Kernel(), fixture("notscript"))).rejects.toThrow("notscript: default export is not script()");
     await expect(loadScript(new Kernel(), fixture("custom"))).rejects.toThrow("custom: custom_at: Date cannot be represented in JSON Schema");
+  });
+});
+
+describe("底子的快照缓存", () => {
+  test("第一次求值并写进缓存；再装载读回来；缓存坏了就重建", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "base-cache-"));
+    const usable = async (base: Awaited<ReturnType<typeof loadBase>>) => {
+      const vm = await QuickJS.restore(base.snapshot, { wasm: base.wasm, extensions: base.extensions });
+      const type = vm.evalCode("typeof __harness.declare").consume((h) => h.toString());
+      vm.dispose();
+      return type;
+    };
+
+    const first = await loadBase(dir);
+    expect(first.cached).toBe(false);
+    // 写缓存不等：等它写完
+    while ((await readdir(dir)).filter((n) => !n.includes(".tmp-")).length === 0) await Bun.sleep(5);
+    const [file] = await readdir(dir);
+    expect(file).toStartWith("base-");
+
+    const second = await loadBase(dir);
+    expect(second.cached).toBe(true);
+    expect(await usable(second)).toBe("function");
+
+    await writeFile(join(dir, file!), "坏了");
+    const third = await loadBase(dir);
+    expect(third.cached).toBe(false);
+    expect(await usable(third)).toBe("function");
   });
 });

@@ -1,6 +1,7 @@
 /**
  * script 包在解释器里跑（7.5）：QuickJS-NG 编译成 WASM（quickjs-wasi）。
- * - 底子：运行时与 Zod 求值一次、存成快照，每个进程一次
+ * - 底子：运行时与 Zod 求值一次、存成快照，每个进程一次。快照缓存在磁盘上（node_modules/.cache/harness），
+ *   再启动时读回来，省掉求值（约 0.15 秒）
  * - 装载（compileScript）：恢复底子、求值包的代码、读出声明，交给内核的是声明与跑在解释器里的实现
  * - 一段源码（runSource，harness_exec 用）：打包，与包的 Operation 一样在全新的解释器里执行它的默认导出
  * - 包草稿（runDraft，harness_exec 用）：与装载一样打包、读出声明，在调用方的 Run 里执行其中一个 Operation
@@ -13,7 +14,8 @@
 
 import { QuickJS, type ExtensionDescriptor, type JSValueHandle, type Snapshot } from "quickjs-wasi";
 import { z } from "zod";
-import { basename } from "node:path";
+import { readdir, rename, rm } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { SCRIPT_KEYS, type OpDecl, type ScriptObject } from "../kernel/plugin";
 import type { LogLevel } from "../kernel/events";
 import type { Ctx } from "../kernel/run";
@@ -49,29 +51,63 @@ type Declaration = {
 type Base = { wasm: WebAssembly.Module; extensions: ExtensionDescriptor[]; snapshot: Snapshot };
 let base: Promise<Base> | undefined;
 
-/** 解释器的底子：编译好的 WASM、扩展与求值过运行时的快照 */
+/** 底子快照的缓存目录：依赖旁边，删掉也只是下次启动重建 */
+const CACHE_DIR = join(dirname(dirname(Bun.resolveSync("quickjs-wasi/package.json", import.meta.dir))), ".cache", "harness");
+
 function getBase() {
-  base ??= (async () => {
-    const compile = (path: string) =>
-      Bun.file(Bun.resolveSync(path, import.meta.dir))
-        .bytes()
-        .then((bytes) => WebAssembly.compile(bytes));
-    const [wasm, encoding, code] = await Promise.all([compile("quickjs-wasi/quickjs.wasm"), compile("quickjs-wasi/encoding.so"), bundleBase()]);
-    const extensions = [{ name: "encoding", wasm: encoding }];
-    const vm = await QuickJS.create({ wasm, extensions });
+  base ??= loadBase(CACHE_DIR);
+  return base;
+}
+
+/**
+ * 解释器的底子：编译好的 WASM、扩展与求值过运行时的快照。cacheDir 里有同一份底子的快照就读回来（cached），
+ * 没有、读不了或恢复出来不对就重新求值，写回去（不等写完）。键是底子的代码与解释器 WASM 的摘要
+ */
+export async function loadBase(cacheDir: string): Promise<Base & { cached: boolean }> {
+  const read = (path: string) => Bun.file(Bun.resolveSync(path, import.meta.dir)).bytes();
+  const [wasmBytes, encodingBytes, code] = await Promise.all([read("quickjs-wasi/quickjs.wasm"), read("quickjs-wasi/encoding.so"), bundleBase()]);
+  const [wasm, encoding] = await Promise.all([WebAssembly.compile(wasmBytes), WebAssembly.compile(encodingBytes)]);
+  const extensions = [{ name: "encoding", wasm: encoding }];
+  const key = [code, wasmBytes, encodingBytes].map((part) => Bun.hash(part).toString(36)).join("-");
+  const file = join(cacheDir, `base-${key}.snapshot`);
+
+  try {
+    const snapshot = QuickJS.deserializeSnapshot(await Bun.file(file).bytes());
+    const vm = await QuickJS.restore(snapshot, { wasm, extensions });
     try {
-      for (const name of HOST) {
-        vm.newFunction(name, () => {
-          throw new Error(`${name} is not connected`);
-        }).consume((fn) => vm.setProp(vm.global, name, fn));
-      }
-      vm.evalCode(code, "harness-runtime.js").dispose();
-      return { wasm, extensions, snapshot: vm.snapshot() };
+      if (vm.evalCode("typeof __harness.run").consume((h) => h.toString()) === "function") return { wasm, extensions, snapshot, cached: true };
     } finally {
       vm.dispose();
     }
-  })();
-  return base;
+  } catch {
+    // 没有缓存，或读不了、恢复不了：重建
+  }
+
+  const vm = await QuickJS.create({ wasm, extensions });
+  let snapshot: Snapshot;
+  try {
+    for (const name of HOST) {
+      vm.newFunction(name, () => {
+        throw new Error(`${name} is not connected`);
+      }).consume((fn) => vm.setProp(vm.global, name, fn));
+    }
+    vm.evalCode(code, "harness-runtime.js").dispose();
+    snapshot = vm.snapshot();
+  } finally {
+    vm.dispose();
+  }
+  void saveBase(cacheDir, file, snapshot).catch(() => {});
+  return { wasm, extensions, snapshot, cached: false };
+}
+
+/** 整个替换地写进缓存，旧的底子删掉 */
+async function saveBase(cacheDir: string, file: string, snapshot: Snapshot): Promise<void> {
+  const tmp = `${file}.tmp-${crypto.randomUUID().slice(0, 8)}`;
+  await Bun.write(tmp, QuickJS.serializeSnapshot(snapshot));
+  await rename(tmp, file);
+  for (const name of await readdir(cacheDir)) {
+    if (name.startsWith("base-") && join(cacheDir, name) !== file && !name.includes(".tmp-")) await rm(join(cacheDir, name), { force: true });
+  }
 }
 
 /** 装载 dir 下的 script 包：打包、在解释器里读出声明。包的代码不在宿主里执行 */
