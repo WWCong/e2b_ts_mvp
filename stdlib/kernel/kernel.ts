@@ -112,8 +112,10 @@ type Phase = "assembling" | "booting" | "running" | "stopping";
 export class Kernel {
   readonly events: EventStream;
   private phase: Phase = "assembling";
-  /** 包名 → 插件对象，按装载顺序。script 包也在这里（只有 requires 与 operations，没有挂点），一起查依赖 */
+  /** 包名 → 插件对象，按装载顺序。script 包也在这里（只有 requires，没有挂点），一起查依赖 */
   private readonly plugins = new Map<string, PluginObject>();
+  /** 哪些包是 script 包：运行中可以换掉（replaceScript） */
+  private readonly scripts = new Set<string>();
   /** 启动时排好：包按依赖的先后（依赖在前，同级按装载顺序） */
   private sorted: string[] = [];
   /** 启动时排好：每个事件挂点上，实现了它的插件的先后 */
@@ -174,12 +176,55 @@ export class Kernel {
    */
   useScript(pkg: string, script: ScriptObject): void {
     this.checkPackage(pkg, script, SCRIPT_KEYS, "script");
+    this.registerScript(pkg, script);
+    this.plugins.set(pkg, { requires: script.requires });
+    this.scripts.add(pkg);
+  }
+
+  /**
+   * 换掉一个装上的 script 包（改了代码，运行中重新装载）：它的 Operation 整个换成新的，之后的调用用新的，
+   * 正在跑的 Run 用旧的跑完；新的没有了的 Operation，之后调用即 unknown。
+   * 新的有问题（键不认得、依赖没装、usage 没写、引用的装饰器不在等）就抛异常，旧的照旧
+   */
+  replaceScript(pkg: string, script: ScriptObject): void {
+    if (this.phase !== "running") throw new Error(`cannot replace ${pkg}: harness is ${this.phase}`);
+    if (!this.scripts.has(pkg)) throw new Error(`${pkg} is not a loaded script package`);
+    for (const key of Object.keys(script)) {
+      if (!SCRIPT_KEYS.has(key)) throw new Error(`${pkg}: unknown key in script object: ${key}`);
+    }
+    for (const dep of script.requires ?? []) if (!this.plugins.has(dep)) throw new Error(`${pkg} requires ${dep}, which is not loaded`);
+    const old = { entry: this.plugins.get(pkg)!, operations: this.operationsOf(pkg) };
+    const remove = () => this.operationsOf(pkg).forEach((op) => this.unregister(op.name));
+    remove();
+    try {
+      this.plugins.set(pkg, { requires: script.requires });
+      this.registerScript(pkg, script);
+      this.checkDecorators();
+    } catch (err) {
+      remove();
+      old.operations.forEach((op) => this.register(op));
+      this.plugins.set(pkg, old.entry);
+      throw err;
+    }
+  }
+
+  private registerScript(pkg: string, script: ScriptObject): void {
     for (const [key, decl] of Object.entries(script.operations)) {
       const name = `${pkg}_${key}`;
       if (decl.public === false) throw new Error(`script operations are public: ${name}`);
       this.register({ name, ...decl, public: true, script: true });
     }
-    this.plugins.set(pkg, { requires: script.requires });
+  }
+
+  private operationsOf(pkg: string): Operation[] {
+    return [...this.operations.values()].filter((op) => packageOf(op.name) === pkg);
+  }
+
+  private unregister(name: string): void {
+    this.operations.delete(name);
+    this.tools.delete(name);
+    this.apis.delete(name);
+    this.artifactDigest = undefined;
   }
 
   private checkPackage(pkg: string, object: object, keys: ReadonlySet<string>, kind: string): void {

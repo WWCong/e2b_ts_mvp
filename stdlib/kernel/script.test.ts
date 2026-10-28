@@ -96,3 +96,65 @@ describe("ctx.callerPackage", () => {
     expect(await kernel.reap(kernel.submit("demo_ask", null))).toEqual({ ok: true, value: { ok: true, value: "demo" } });
   });
 });
+
+describe("运行中换掉 script 包", () => {
+  /** script 包 demo：say 先等 demo_gate 放行再回答版本号；demo_gate 是公开的原生 Operation，release 放行 */
+  async function setup() {
+    const kernel = new Kernel();
+    let release = () => {};
+    kernel.register({
+      name: "gate_wait",
+      usage: "等放行",
+      public: true,
+      input: z.null(),
+      impl: () => new Promise((resolve) => (release = () => resolve(null))),
+    });
+    const version = (v: string) => ({
+      operations: {
+        say: op({ usage: "说版本", input: z.object({ wait: z.boolean().default(false) }), impl: async (ctx, { wait }) => (wait && (await ctx.call("gate_wait", null)), v) }),
+      },
+    });
+    kernel.useScript("demo", version("v1"));
+    kernel.register({ name: "other_x", input: z.null(), impl: async () => null });
+    kernel.register({ name: "other_tools", input: z.null(), only: ["demo"], impl: async (ctx) => ctx.tools().map((t) => t.name) });
+    await kernel.boot();
+    const run = (input: unknown = {}) => kernel.reap(kernel.submit("demo_say", input));
+    return { kernel, version, run, release: () => release() };
+  }
+
+  test("之后的调用用新的；正在跑的 Run 用旧的跑完", async () => {
+    const { kernel, version, run, release } = await setup();
+    const inflight = kernel.submit("demo_say", { wait: true });
+    await Bun.sleep(5);
+
+    kernel.replaceScript("demo", version("v2"));
+    expect(await run()).toEqual({ ok: true, value: "v2" });
+    release();
+    expect(await kernel.reap(inflight)).toEqual({ ok: true, value: "v1" });
+  });
+
+  test("新的里没有的 Operation 之后调用即 unknown，新加的能调，工具列表跟着变", async () => {
+    const { kernel } = await setup();
+    const tools = () => kernel.reap(kernel.submit("other_tools", null));
+    expect(await tools()).toEqual({ ok: true, value: ["demo_say"] });
+    kernel.replaceScript("demo", { operations: { hello: op({ usage: "打招呼", input: z.null(), impl: async () => "hi" }) } });
+
+    expect(() => kernel.submit("demo_say", {})).toThrow("unknown operation: demo_say");
+    expect(await kernel.reap(kernel.submit("demo_hello", null))).toEqual({ ok: true, value: "hi" });
+    expect(await tools()).toEqual({ ok: true, value: ["demo_hello"] });
+  });
+
+  test("新的有问题：抛异常，旧的照旧；只能换装上的 script 包", async () => {
+    const { kernel, run } = await setup();
+
+    expect(() => kernel.replaceScript("demo", { requires: ["web"], operations: {} })).toThrow("demo requires web, which is not loaded");
+    expect(() =>
+      kernel.replaceScript("demo", {
+        operations: { a: op({ usage: "a", input: z.null(), impl: async () => 1 }), b: op({ input: z.null(), impl: async () => 2 }) },
+      }),
+    ).toThrow("public operation needs usage: demo_b");
+    expect(await run()).toEqual({ ok: true, value: "v1" });
+    expect(() => kernel.replaceScript("other", { operations: {} })).toThrow("other is not a loaded script package");
+  });
+});
+

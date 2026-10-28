@@ -118,4 +118,36 @@ describe("宿主", () => {
     expect(bad.stderr).toContain("serve.http exposes echo_nope, which is not an api operation");
     expect(existsSync(socket)).toBe(false);
   });
+
+  test("watch：改了 script 包，运行中重新装载；改坏了、对外的没了，仍用原来的", async () => {
+    const pkg = join(dir, "greeter");
+    const greeter = (reply: string, api = true) =>
+      `import { z } from "zod"; import { op, script } from "stdlib";
+       export default script({ operations: { hello: op({ api: ${api}, usage: "打招呼", input: z.object({}), output: z.string(), impl: async () => ${JSON.stringify(reply)} }) } });`;
+    const hello = async () => ((await client().call("greeter_hello", {})) as { result: unknown }).result;
+    /** 改了之后等它换上：最多等 5 秒 */
+    const until = async (expected: unknown) => {
+      for (let t0 = Date.now(); Date.now() - t0 < 5000; await Bun.sleep(50)) if (Bun.deepEquals(await hello(), expected)) return;
+      throw new Error(`still ${JSON.stringify(await hello())}`);
+    };
+    await Bun.write(join(pkg, "index.ts"), greeter("v1"));
+    const app = await launch(`watch=${pkg}`);
+    await serving(app.proc);
+    expect(await hello()).toEqual({ ok: true, value: "v1" });
+
+    await Bun.write(join(pkg, "index.ts"), greeter("v2"));
+    await until({ ok: true, value: "v2" });
+    await Bun.write(join(pkg, "index.ts"), "export default 1 +;");
+    await Bun.sleep(300);
+    await Bun.write(join(pkg, "index.ts"), greeter("v3", false));
+    await Bun.sleep(300);
+    expect(await hello()).toEqual({ ok: true, value: "v2" });
+
+    app.proc.kill("SIGINT");
+    const { stderr } = await app.exited();
+    expect(stderr).toContain("harness：script 包 greeter 改过了，已重新装载");
+    expect(stderr).toContain("harness：script 包 greeter 重新装载失败，仍用原来的：greeter: 1:19 Unexpected ;");
+    expect(stderr).toContain("harness：script 包 greeter 重新装载失败，仍用原来的：exposed but no longer an api operation: greeter_hello");
+  });
 });
+
