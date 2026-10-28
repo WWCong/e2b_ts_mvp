@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { z } from "zod";
-import { Kernel, loadPlugin, op } from "stdlib";
+import { Kernel, loadPlugin, op, type HarnessEvent } from "stdlib";
 import { httpService } from "stdlib/serve/http";
 import type { Service } from "stdlib/serve/service";
-import { httpClient } from "../http";
+import { httpClient, type Client } from "../http";
 import { render } from "./prompt";
 import { runConsole, type ConsoleConfig } from ".";
 
@@ -138,5 +138,37 @@ describe("终端客户端", () => {
     await session.done;
 
     expect(session.printed()).toContain("▶ demo_say 说：hi\n✓ demo_say → echo: hi\n");
+  });
+
+  test("结果比事件流先到：等这棵树画完再显示回答，回答里的 Markdown 去掉标记", async () => {
+    // 假的客户端：调用立刻返回，这棵树的事件 50 毫秒后才到
+    let emit: (e: HarnessEvent) => void = () => {};
+    const event = (e: object) => emit({ boot: "b", seq: 0, ts: 0, ...e } as HarnessEvent);
+    const client = {
+      name: "console",
+      origin: "http:console",
+      runs: async () => [],
+      parks: async () => [],
+      call: async () => {
+        setTimeout(() => {
+          event({ type: "run.started", runId: "r1", operation: "demo_say", input: { text: "hi" }, depth: 0, chain: [] });
+          event({ type: "run.exited", runId: "r1", operation: "demo_say", result: { ok: true, value: "**好**" } });
+        }, 50);
+        return { runId: "r1", result: { ok: true as const, value: "**好**" } };
+      },
+      events: async (onEvent: (e: HarnessEvent) => void, signal?: AbortSignal) => {
+        emit = onEvent;
+        return { closed: new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve(), { once: true })) };
+      },
+    } as unknown as Client;
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let printed = "";
+    output.on("data", (chunk) => (printed += String(chunk)));
+    input.end("hi\n");
+
+    await runConsole({ client, say: "demo_say", input, output });
+    expect(printed.indexOf("✓ demo_say")).toBeGreaterThan(0);
+    expect(printed.indexOf("\n好\n")).toBeGreaterThan(printed.indexOf("✓ demo_say"));
   });
 });

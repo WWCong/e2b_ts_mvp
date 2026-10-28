@@ -5,6 +5,7 @@
  * - 要人回答的问题（park，ui 插件约定的格式）一次问一个：事件流里新开的，加上连上时已经在等的
  * - 连上时先开场（greet），再接着等自己上次发起、还没取走结果的树（断开或 Harness 重启过的），然后进入对话
  * - 事件流按 Run 树画出来（tree），各 Operation 的摘要规则由应用给（brief）
+ * - 回答里的 Markdown 换成终端的写法（markdown.ts）
  * 输入只有一份：对话与回答问题排队读，不抢同一行；问题都在开场之后问，所以 greet 不能问人。
  * 退出只是客户端走了：在途的那一轮在服务端照常跑，结果留着，问题照旧等着，下次连上接着显示。
  * Harness 停下（事件流断开）时客户端也退出。
@@ -14,6 +15,7 @@
 import { createInterface } from "node:readline";
 import type { Result } from "stdlib";
 import type { Client } from "../http";
+import { terminalText } from "./markdown";
 import { lineReader, parse, render, type ReadLine } from "./prompt";
 import { eventTree, type Brief } from "./tree";
 
@@ -44,6 +46,8 @@ export async function runConsole(config: ConsoleConfig): Promise<{ pending: bool
   const { client } = config;
   const output = config.output ?? process.stdout;
   const print = (text: string) => void output.write(`${text}\n`);
+  /** 输出是终端才加控制码（粗体等） */
+  const color = (output as { isTTY?: boolean }).isTTY === true;
 
   // 退出：不再等任何东西，在途的请求中止（服务端照常），事件流断开
   const abort = new AbortController();
@@ -64,6 +68,9 @@ export async function runConsole(config: ConsoleConfig): Promise<{ pending: bool
     return line;
   };
   abort.signal.addEventListener("abort", () => rl?.close(), { once: true });
+
+  /** 把事件流画成 Run 树；不画时没有 */
+  const tree = config.tree === false ? undefined : eventTree(print, config.brief);
 
   /** 正在等结果的调用；退出时还有，或有一轮随 Harness 停下了（stalled），就是 pending */
   let busy = 0;
@@ -103,12 +110,28 @@ export async function runConsole(config: ConsoleConfig): Promise<{ pending: bool
     }
   }
 
-  /** 等一次调用的结果并显示；退出了，或 Harness 停下（树被关停）就返回 false，不再往下 */
-  async function show(reply: Promise<{ runId: string; result: Result }>): Promise<boolean> {
+  /**
+   * 根 Run 在事件流里结束了没有。结果经 HTTP 返回，可能比事件流里这棵树的最后几条先到：
+   * 显示结果之前等它的结束事件（最多一秒），Run 树画完再显示回答，不画到下一个输入提示后面
+   */
+  const roots = new Map<string, PromiseWithResolvers<void>>();
+  const root = (runId: string) => roots.get(runId) ?? roots.set(runId, Promise.withResolvers()).get(runId)!;
+  const drawn = async (runId: string) => {
+    if (!tree) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([root(runId).promise, new Promise((resolve) => (timer = setTimeout(resolve, 1000)))]);
+    clearTimeout(timer);
+    roots.delete(runId);
+  };
+
+  /** 等一次调用的结果并显示；退出了，或 Harness 停下（树被关停）就返回 false，不再往下。done：树在连上之前就结束了，不等它的事件 */
+  async function show(reply: Promise<{ runId: string; result: Result }>, done = false): Promise<boolean> {
     busy++;
     let result: Result;
     try {
-      ({ result } = await reply);
+      let runId: string;
+      ({ runId, result } = await reply);
+      if (!done) await drawn(runId);
     } catch (err) {
       // 退出了：不等了，那一轮在服务端照常（busy 留着，算 pending）
       if (abort.signal.aborted) return false;
@@ -123,7 +146,7 @@ export async function runConsole(config: ConsoleConfig): Promise<{ pending: bool
       return false;
     }
     if (!result.ok) print(`\n失败（${result.by}）：${result.reason}`);
-    else if (text(result.value)) print(`\n${text(result.value)}`);
+    else if (text(result.value)) print(`\n${terminalText(text(result.value), color)}`);
     return true;
   }
 
@@ -136,9 +159,10 @@ export async function runConsole(config: ConsoleConfig): Promise<{ pending: bool
   };
 
   // 先接上事件流，再取现状：之后开出的问题都收得到
-  const tree = config.tree === false ? undefined : eventTree(print, config.brief);
   const { closed } = await client.events((e) => {
     tree?.(e);
+    if (e.type === "run.started" && e.parent === undefined) root(e.runId);
+    if (e.type === "run.exited" || e.type === "run.killed") roots.get(e.runId)?.resolve();
     if (e.type === "park.opened") offer(e.runId, e.payload);
     // 关停时 park 不关（不发 park.closed），只有 run.killed
     if (e.type === "park.closed" || e.type === "run.killed") open.delete(e.runId);
@@ -156,7 +180,7 @@ export async function runConsole(config: ConsoleConfig): Promise<{ pending: bool
     if (mine.length > 0) print(`\n接着等上次没做完的 ${mine.map((r) => r.operation).join("、")}…`);
     for (const park of await client.parks()) offer(park.id, park.payload);
     greeted.resolve();
-    for (const run of mine) if (!(await show(client.result(run.runId, abort.signal)))) return { pending: pending() };
+    for (const run of mine) if (!(await show(client.result(run.runId, abort.signal), run.done))) return { pending: pending() };
     let line = config.first?.trim() || undefined;
     while (!abort.signal.aborted) {
       line ??= (await read("\n你> "))?.trim();
