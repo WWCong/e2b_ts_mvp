@@ -10,6 +10,8 @@ import type { Rejected, Result } from "./run";
 
 type Link = { runId: string; operation: string; decorator: string };
 
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
 /** 日志里一条已完成的记录：runId 的第 seq 步 */
 export type Replayed = { runId: string; seq: number } & Recorded;
 
@@ -59,6 +61,11 @@ export type EventBody =
    * 根 Run 的结果被取走了（reap），或放得太久没人取、启动时清掉了（expired）。之后不再保留，提交阶段删掉它的日志
    */
   | { type: "run.reaped"; runId: string; operation: string; expired?: boolean }
+  /**
+   * 一行日志（观测级）：Run 经 ctx.log 写的，script 的 console 输出也是。不交给调用方，也不进写前日志；
+   * 恢复时重新执行的 Run 回放已完成的步骤期间写的不再发（它们在崩溃前发过）
+   */
+  | { type: "run.logged"; runId: string; operation: string; level: LogLevel; text: string }
   | ({ type: "decorator.rewrote"; phase: "input" | "result"; value: unknown } & Link)
   | ({ type: "decorator.rejected"; result: Rejected } & Link)
   | ({ type: "decorator.failed"; onError: OnError; error: string } & Link);

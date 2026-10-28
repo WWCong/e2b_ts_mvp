@@ -7,7 +7,7 @@
 import { z } from "zod";
 import { runChain, type DecoratorCtx, type DecoratorDef } from "./chain";
 import type { ApiInfo, Outside, ParkInfo, RunInfo } from "./outside";
-import { EventStream, notify, type EventBody, type HarnessEvent } from "./events";
+import { EventStream, notify, type EventBody, type HarnessEvent, type LogLevel } from "./events";
 import { AFTER, EVENT_HOOKS, PLUGIN_KEYS, SCRIPT_KEYS, type BeforeEvent, type BeforeHook, type PluginObject, type ScriptObject } from "./plugin";
 import { checkName, checkPackageName, packageOf } from "./names";
 import { topo } from "./order";
@@ -684,12 +684,19 @@ export class Kernel {
     // 实现的调用查它自己的能力面；装饰器的调用同样记在这个 Run 名下，但不查它的能力面（4.1）
     const { signal } = live.abort;
     const { runId, attempt } = run;
+    const logLine = (level: LogLevel, text: string) => {
+      // 已结束的不再记；恢复时还在回放已完成的步骤：这些日志崩溃前发过
+      const recorded = live.replay?.at(live.issued);
+      if ((run.status !== "running" && run.status !== "waiting") || (recorded && isDone(recorded))) return;
+      this.events.emit({ type: "run.logged", runId, operation: run.operation, level, text });
+    };
     const ctx: Ctx = {
       runId,
       attempt,
       callerPackage: parent && packageOf(parent.run.operation),
       ...calls((name, input) => this.callChild(live, name, input, op)),
       signal,
+      log: logLine,
       tools: () => this.toolsIn(op),
       park: (req) => (op.script ? Promise.reject(new Error("a script cannot park directly: call an operation")) : this.park(live, req)),
     };
@@ -698,6 +705,7 @@ export class Kernel {
       attempt,
       ...calls((name, input) => this.callChild(live, name, input)),
       signal,
+      log: logLine,
     };
 
     const settle = async () => {

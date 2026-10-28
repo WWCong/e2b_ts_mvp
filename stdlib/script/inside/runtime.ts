@@ -5,7 +5,7 @@
  * - run：执行包里的一个 Operation，或一段源码的默认导出（harness_exec）。ctx 的调用经宿主函数 __host_call 交给内核，
  *   入参与结果以 JSON 往返：宿主交进来的是 UTF-8 字节，这里解码（大字符串按字符串交进来很慢，见 ../sandbox.ts）
  * 解释器里本来就没有文件、网络、定时器与宿主对象。时间与随机数也拿掉了：方案里由内核提供、随调用记录回放（7.5），
- * 还没做，要时间就调 time_now。console 的输出收起来随结果交回（harness_exec 交给调用方，script 包的现在丢掉）。
+ * 还没做，要时间就调 time_now。console 的输出经宿主函数 __host_log 写进这个 Run 的日志（run.logged 事件），不交给调用方。
  */
 
 import * as zod from "zod";
@@ -17,6 +17,7 @@ import * as stdlib from "./stdlib";
 /** 宿主函数：名字在底子里，每个 Run 恢复后接上它这个 Run 的（../sandbox.ts） */
 declare function __host_call(request: string): Promise<Uint8Array>;
 declare function __host_tools(): string;
+declare function __host_log(level: string, text: string): void;
 
 const decoder = new TextDecoder();
 const fromHost = (bytes: Uint8Array) => JSON.parse(decoder.decode(bytes));
@@ -33,19 +34,26 @@ globalThis.Date = new Proxy(OriginalDate, {
 });
 delete (globalThis as { performance?: unknown }).performance;
 
-/** console 的输出，一次 run 一份；太长的截断 */
-const LOG_LIMIT = 10_000;
-let logs: string[] = [];
+/** console 的输出：一次执行最多这么多字，再多的不记，免得一段脚本刷满日志 */
+const LOG_LIMIT = 100_000;
 let logged = 0;
 const show = (value: unknown) =>
   typeof value === "string" ? value : value instanceof Error ? `${value.name}: ${value.message}` : (JSON.stringify(value) ?? String(value));
-const log = (...args: unknown[]) => {
-  if (logged > LOG_LIMIT) return;
-  const line = args.map(show).join(" ");
-  logged += line.length;
-  logs.push(logged > LOG_LIMIT ? `${line.slice(0, LOG_LIMIT - logged + line.length)}…（输出太长，后面的不要了）` : line);
+const logger =
+  (level: string) =>
+  (...args: unknown[]) => {
+    if (logged > LOG_LIMIT) return;
+    const line = args.map(show).join(" ");
+    logged += line.length;
+    __host_log(level, logged > LOG_LIMIT ? `${line.slice(0, LOG_LIMIT - logged + line.length)}…（日志太多，后面的不记了）` : line);
+  };
+(globalThis as { console?: unknown }).console = {
+  log: logger("info"),
+  info: logger("info"),
+  debug: logger("debug"),
+  warn: logger("warn"),
+  error: logger("error"),
 };
-(globalThis as { console?: unknown }).console = { log, info: log, warn: log, error: log, debug: log };
 
 const harness = {
   modules: { stdlib, zod },
@@ -85,12 +93,10 @@ const harness = {
 
   /**
    * 执行包里的 Operation key；key 为 null 时执行默认导出的函数（一段源码）。
-   * request 是 { input, runId, attempt, callerPackage }，兑现为 JSON 的 { value, logs }
+   * request 是 { input, runId, attempt, callerPackage }，兑现为 JSON 的 { value }
    */
   async run(key: string | null, request: Uint8Array): Promise<string> {
     const { input, runId, attempt, callerPackage } = fromHost(request);
-    logs = [];
-    logged = 0;
     const call = async (name: string, input: unknown) => fromHost(await __host_call(JSON.stringify({ name, input })));
     const ctx = {
       runId,
@@ -103,7 +109,7 @@ const harness = {
     const impl = key === null ? (harness.pkg as unknown) : harness.pkg!.object.operations[key]!.impl;
     if (typeof impl !== "function") throw new Error("default export is not a function: export default async (ctx, input) => …");
     const value = await impl(ctx, input);
-    return JSON.stringify({ value, logs });
+    return JSON.stringify({ value });
   },
 };
 

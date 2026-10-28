@@ -21,21 +21,16 @@ export type Infra = { llm?: Llm; workspace?: Volume; state?: Volume };
 export type Granted = { llm: Llm; workspace: Volume; store: Volume };
 export type Need = keyof Granted;
 
-/** 按插件声明的需要从装配的基建里取；装配没提供的，装载失败 */
-export function grant(pkg: string, needs: readonly string[], infra: Infra): Partial<Granted> {
+/** 按插件声明的需要从装配的基建里取：needs 里的装配没提供，装载失败；wants 里的有就给 */
+export function grant(pkg: string, needs: readonly string[], infra: Infra, wants: readonly string[] = []): Partial<Granted> {
   const granted: Partial<Granted> = {};
-  const missing = (what: string) => new Error(`${pkg} needs ${what}, which the assembly does not provide`);
-  for (const need of needs) {
-    if (need === "store") {
-      if (!infra.state) throw missing("store (from state)");
-      granted.store = infra.state.sub(`store/${pkg}`);
-    } else if (need === "llm" || need === "workspace") {
-      const it = infra[need];
-      if (!it) throw missing(need);
-      Object.assign(granted, { [need]: it });
-    } else {
-      throw new Error(`${pkg}: unknown need: ${need}`);
-    }
+  for (const need of [...needs, ...wants]) {
+    let it: Granted[Need] | undefined;
+    if (need === "store") it = infra.state?.sub(`store/${pkg}`);
+    else if (need === "llm" || need === "workspace") it = infra[need];
+    else throw new Error(`${pkg}: unknown need: ${need}`);
+    if (it) Object.assign(granted, { [need]: it });
+    else if (needs.includes(need)) throw new Error(`${pkg} needs ${need === "store" ? "store (from state)" : need}, which the assembly does not provide`);
   }
   return granted;
 }

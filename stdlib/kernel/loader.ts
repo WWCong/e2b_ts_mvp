@@ -17,7 +17,7 @@ export async function loadPlugin(kernel: Kernel, dir: string, config: unknown = 
   const mod: { default?: PluginDecl<unknown> } = await import(join(dir, "index.ts"));
   const decl = mod.default;
   if (decl?.kind !== "plugin") throw new Error(`${pkg}: default export is not plugin()`);
-  kernel.use(pkg, decl.factory(config, grant(pkg, decl.needs, infra)));
+  kernel.use(pkg, decl.factory(config, grant(pkg, decl.needs, infra, decl.wants)));
 }
 
 /** 装载 dir/index.ts，默认导出须是 script()。包的代码不在宿主里执行；limits 给测试调小限额 */

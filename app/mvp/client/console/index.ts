@@ -14,7 +14,7 @@
 
 import { createInterface } from "node:readline";
 import type { Result } from "stdlib";
-import type { Client } from "../http";
+import { ServiceError, type Client } from "../http";
 import { terminalText } from "./markdown";
 import { lineReader, parse, render, type ReadLine } from "./prompt";
 import { eventTree, type Brief } from "./tree";
@@ -136,18 +136,26 @@ export async function runConsole(config: ConsoleConfig): Promise<{ pending: bool
       // 退出了：不等了，那一轮在服务端照常（busy 留着，算 pending）
       if (abort.signal.aborted) return false;
       busy--;
-      print(`\n失败：${err instanceof Error ? err.message : String(err)}`);
+      if (!(err instanceof ServiceError)) return disconnected();
+      print(`\n失败：${err.message}`);
       return true;
     }
     busy--;
-    if (!result.ok && result.by === "kernel" && result.reason === "shutdown") {
-      stalled = true;
-      quit();
-      return false;
-    }
+    if (!result.ok && result.by === "kernel" && result.reason === "shutdown") return disconnected();
     if (!result.ok) print(`\n失败（${result.by}）：${result.reason}`);
     else if (text(result.value)) print(`\n${terminalText(text(result.value), color)}`);
     return true;
+  }
+
+  /**
+   * Harness 停下或连接断了：这一轮的结果不知道（在服务端接着做，或重启后接着做），算 pending。
+   * 关停的结果、连接断开、事件流断开谁先到都有可能，先到的说一声，之后退出
+   */
+  function disconnected(): false {
+    stalled = true;
+    print("\nHarness 断开了");
+    quit();
+    return false;
   }
 
   const call = (name: string, input: unknown) => show(client.call(name, input, abort.signal));

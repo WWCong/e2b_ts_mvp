@@ -44,6 +44,8 @@ export function eventTree(write: (line: string) => void, brief?: Brief): (event:
         return void depths.delete(e.runId);
       case "call.rejected":
         return line(depthOf(e.runId) + 1, `✗ ${e.target} ${e.result.by}: ${e.result.reason}`);
+      case "run.logged":
+        return line(depthOf(e.runId) + 1, `· ${e.level === "info" ? "" : `[${e.level}] `}${e.text}`);
       case "decorator.rewrote":
         return line(depthOf(e.runId) + 1, `· ${e.decorator} rewrote ${e.phase}`);
       case "decorator.rejected":

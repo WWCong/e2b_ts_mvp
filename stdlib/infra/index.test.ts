@@ -42,6 +42,12 @@ describe("基建的注入", () => {
     expect(() => grant("x", ["disk"], {})).toThrow("x: unknown need: disk");
   });
 
+  test("wants 里的有就给，没有也不失败", () => {
+    const workspace = localDir(join(root, "ws"));
+    expect(grant("x", [], { workspace }, ["workspace"])).toEqual({ workspace });
+    expect(grant("x", [], {}, ["workspace", "store"])).toEqual({});
+  });
+
   test("写前日志在 state 的 journal/，要求本地路径", () => {
     expect(journalDir(localDir(root))).toBe(join(root, "journal"));
     expect(journalDir(undefined)).toBeUndefined();

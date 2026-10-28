@@ -3,6 +3,7 @@
  * - 底子：运行时与 Zod 求值一次、存成快照，每个进程一次
  * - 装载（compileScript）：恢复底子、求值包的代码、读出声明，交给内核的是声明与跑在解释器里的实现
  * - 一段源码（runSource，harness_exec 用）：打包，与包的 Operation 一样在全新的解释器里执行它的默认导出
+ * - 包草稿（runDraft，harness_exec 用）：与装载一样打包、读出声明，在调用方的 Run 里执行其中一个 Operation
  * - 每个 Run：从底子恢复出一个全新的 WASM 实例（内存与别的 Run 不共享），求值包的代码，执行；结束或被杀即丢掉。
  *   实现发起的调用经 ctx.call 交给内核，记在这个 Run 名下，照常查能力面与公开表、记日志、恢复时回放
  * 限额：内存上限；一段同步执行（两次等待之间）超时即中断，这个 Run 以失败结束。
@@ -12,7 +13,9 @@
 
 import { QuickJS, type ExtensionDescriptor, type JSValueHandle, type Snapshot } from "quickjs-wasi";
 import { z } from "zod";
-import type { OpDecl, ScriptObject } from "../kernel/plugin";
+import { basename } from "node:path";
+import { SCRIPT_KEYS, type OpDecl, type ScriptObject } from "../kernel/plugin";
+import type { LogLevel } from "../kernel/events";
 import type { Ctx } from "../kernel/run";
 import { bundleBase, bundlePackage, bundleSource } from "./bundle";
 
@@ -30,7 +33,7 @@ const encoder = new TextEncoder();
 /** sliceMs：一段同步执行的上限；maxCalls：一次执行最多发起多少个调用，缺省不限 */
 export type ScriptLimits = { sliceMs?: number; maxCalls?: number };
 /** 宿主函数的名字：建底子时占好，恢复后接上 */
-const HOST = ["__host_call", "__host_tools"] as const;
+const HOST = ["__host_call", "__host_tools", "__host_log"] as const;
 
 /** 包的声明：runtime.ts 的 declare 交出的 */
 type Declaration = {
@@ -90,8 +93,7 @@ export async function compileScript(pkg: string, dir: string, limits: ScriptLimi
       output: output && z.fromJSONSchema(output as never),
       schemas: { input, output },
       source: code,
-      // console 的输出现在丢掉（以后经事件）
-      impl: async (ctx, input) => (await execute(pkg, code, key, input, ctx, limits)).value,
+      impl: (ctx, input) => execute(pkg, code, key, input, ctx, limits),
     };
   }
   // 不认得的键照样交给内核，由它报错
@@ -117,17 +119,34 @@ async function declare(pkg: string, dir: string): Promise<[code: string, decl: D
 }
 
 /**
- * 在一个全新的解释器里跑一段源码：默认导出 async (ctx, input) => 结果。返回结果与 console 的输出。
+ * 在一个全新的解释器里跑一段源码：默认导出 async (ctx, input) => 结果。
  * 源码写错、import 了不许的，以异常报出，带行列
  */
-export async function runSource(source: string, input: unknown, ctx: Ctx, limits: ScriptLimits = {}): Promise<Outcome> {
+export async function runSource(source: string, input: unknown, ctx: Ctx, limits: ScriptLimits = {}): Promise<unknown> {
   return execute("source", await bundleSource(source), null, input, ctx, limits);
 }
 
-type Outcome = { value: unknown; logs: string[] };
+/**
+ * 跑 dir 下 script 包草稿的 Operation key：与装上的包一样打包、按它的 schema 校验入参与出参，在 ctx 的 Run 里执行。
+ * 草稿没有装进内核：它的 requires、only、exclude 不起作用，调用记在 ctx 的 Run 名下
+ */
+export async function runDraft(dir: string, key: string, input: unknown, ctx: Ctx, limits: ScriptLimits = {}): Promise<unknown> {
+  const pkg = basename(dir);
+  const object = await compileScript(pkg, dir, limits);
+  for (const k of Object.keys(object)) if (!SCRIPT_KEYS.has(k)) throw new Error(`${pkg}: unknown key in script object: ${k}`);
+  const op = object.operations[key];
+  if (!op) throw new Error(`${pkg} has no operation ${key} (it has: ${Object.keys(object.operations).join(", ") || "none"})`);
+  const parsed = op.input.safeParse(input);
+  if (!parsed.success) throw new Error(`invalid input for ${pkg}_${key}:\n${z.prettifyError(parsed.error)}`);
+  const value = await op.impl(ctx, parsed.data);
+  if (!op.output) return value;
+  const checked = op.output.safeParse(value);
+  if (!checked.success) throw new Error(`invalid output of ${pkg}_${key}:\n${z.prettifyError(checked.error)}`);
+  return checked.data;
+}
 
 /** 在一个全新的解释器里执行包的一个 Operation；key 为 null 时执行默认导出的函数 */
-async function execute(pkg: string, code: string, key: string | null, input: unknown, ctx: Ctx, limits: ScriptLimits): Promise<Outcome> {
+async function execute(pkg: string, code: string, key: string | null, input: unknown, ctx: Ctx, limits: ScriptLimits): Promise<unknown> {
   const { sliceMs = SLICE_MS, maxCalls = Infinity } = limits;
   const { wasm, extensions, snapshot } = await getBase();
   let deadline = Infinity;
@@ -139,7 +158,7 @@ async function execute(pkg: string, code: string, key: string | null, input: unk
     interruptHandler: () => (performance.now() > deadline ? (interrupted = true) : false),
   });
 
-  const done = Promise.withResolvers<Outcome>();
+  const done = Promise.withResolvers<unknown>();
   /** 正在解释器里执行的层数：宿主函数是在解释器执行中被调的，那时不能丢掉解释器 */
   let busy = 0;
   let over = false;
@@ -190,6 +209,10 @@ async function execute(pkg: string, code: string, key: string | null, input: unk
     return deferred.handle;
   });
   vm.registerHostCallback("__host_tools", () => vm.newString(JSON.stringify(ctx.tools())));
+  vm.registerHostCallback("__host_log", (level, text) => {
+    ctx.log(level.toString() as LogLevel, text.toString());
+    return vm.undefined;
+  });
   // 恢复的途中就被杀了：不再开始
   if (ctx.signal.aborted) fail(new Error("killed"));
   else ctx.signal.addEventListener("abort", () => fail(new Error("killed")), { once: true });
@@ -202,7 +225,7 @@ async function execute(pkg: string, code: string, key: string | null, input: unk
     void vm.resolvePromise(promise).then((outcome) => {
       if (over) return;
       if ("error" in outcome) fail(toError(outcome.error));
-      else end(() => done.resolve(JSON.parse(outcome.value.toString()) as Outcome));
+      else end(() => done.resolve((JSON.parse(outcome.value.toString()) as { value?: unknown }).value));
     });
     promise.dispose();
     vm.executePendingJobs();

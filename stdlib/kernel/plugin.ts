@@ -78,6 +78,7 @@ export const AFTER = {
   "run.exited": "afterRunExit",
   "run.killed": "afterRunKill",
   "run.reaped": "afterRunReap",
+  "run.logged": "afterRunLog",
   "call.rejected": "afterCallReject",
   "park.opened": "afterParkOpen",
   "park.closed": "afterParkClose",
@@ -191,23 +192,25 @@ export function script<P extends ScriptObject>(object: P): ScriptDecl<P> {
 export type PluginDecl<C, P extends PluginObject = PluginObject> = {
   kind: "plugin";
   needs: readonly Need[];
+  wants: readonly Need[];
   factory: (config: C, infra: Partial<Granted>) => P;
 };
 
 /**
  * 声明插件：factory 以装配配置调用一次，返回插件对象。
  * 要用基建的写 plugin({ needs: ["llm"] }, (config, { llm }) => …)：装载时把装配提供的注入进来，
- * 装配没提供就装载失败。基建见 stdlib/infra：llm、workspace、store（插件自己的一块持久存储）
+ * 装配没提供就装载失败。有就用、没有也能装的写在 wants 里，没提供时是 undefined。
+ * 基建见 stdlib/infra：llm、workspace、store（插件自己的一块持久存储）
  */
 export function plugin<C = Record<string, never>, P extends PluginObject = PluginObject>(factory: (config: C) => P): PluginDecl<C, P>;
-export function plugin<N extends Need, C = Record<string, never>, P extends PluginObject = PluginObject>(
-  options: { needs: readonly N[] },
-  factory: (config: C, infra: Pick<Granted, N>) => P,
+export function plugin<N extends Need = never, W extends Need = never, C = Record<string, never>, P extends PluginObject = PluginObject>(
+  options: { needs?: readonly N[]; wants?: readonly W[] },
+  factory: (config: C, infra: Pick<Granted, N> & Partial<Pick<Granted, W>>) => P,
 ): PluginDecl<C, P>;
 export function plugin(
-  first: { needs: readonly Need[] } | ((config: unknown) => PluginObject),
+  first: { needs?: readonly Need[]; wants?: readonly Need[] } | ((config: unknown) => PluginObject),
   factory?: (config: unknown, infra: never) => PluginObject,
 ): PluginDecl<unknown> {
-  if (typeof first === "function") return { kind: "plugin", needs: [], factory: first };
-  return { kind: "plugin", needs: first.needs, factory: factory as PluginDecl<unknown>["factory"] };
+  if (typeof first === "function") return { kind: "plugin", needs: [], wants: [], factory: first };
+  return { kind: "plugin", needs: first.needs ?? [], wants: first.wants ?? [], factory: factory as PluginDecl<unknown>["factory"] };
 }

@@ -7,6 +7,10 @@
 
 import type { ApiInfo, HarnessEvent, ParkInfo, Result, RunInfo } from "stdlib";
 
+/** 服务接口回了错误（请求本身不成立，如没对外、入参不符）。连不上、连接断了抛的是别的异常 */
+export class ServiceError extends Error {}
+
+/** 调用都可能抛异常：服务接口回了错误是 ServiceError，别的表示连接出了问题（Harness 停下或走了） */
 export type Client = {
   /** 自报的名字 */
   readonly name: string;
@@ -41,7 +45,7 @@ export function httpClient(options: { socket: string; name: string }): Client {
       headers: { "harness-client": name },
       signal,
     });
-    if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${res.status}`);
+    if (!res.ok) throw new ServiceError(((await res.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${res.status}`);
     return res;
   };
   const json = async <T>(method: string, path: string, body?: unknown, signal?: AbortSignal) =>
