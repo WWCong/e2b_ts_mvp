@@ -2,6 +2,7 @@
  * script 包在解释器里跑（7.5）：QuickJS-NG 编译成 WASM（quickjs-wasi）。
  * - 底子：运行时与 Zod 求值一次、存成快照，每个进程一次
  * - 装载（compileScript）：恢复底子、求值包的代码、读出声明，交给内核的是声明与跑在解释器里的实现
+ * - 一段源码（runSource，harness_exec 用）：打包，与包的 Operation 一样在全新的解释器里执行它的默认导出
  * - 每个 Run：从底子恢复出一个全新的 WASM 实例（内存与别的 Run 不共享），求值包的代码，执行；结束或被杀即丢掉。
  *   实现发起的调用经 ctx.call 交给内核，记在这个 Run 名下，照常查能力面与公开表、记日志、恢复时回放
  * 限额：内存上限；一段同步执行（两次等待之间）超时即中断，这个 Run 以失败结束。
@@ -13,7 +14,7 @@ import { QuickJS, type ExtensionDescriptor, type JSValueHandle, type Snapshot } 
 import { z } from "zod";
 import type { OpDecl, ScriptObject } from "../kernel/plugin";
 import type { Ctx } from "../kernel/run";
-import { bundleBase, bundlePackage } from "./bundle";
+import { bundleBase, bundlePackage, bundleSource } from "./bundle";
 
 /** 每个解释器的内存上限 */
 const MEMORY_LIMIT = 256 * 1024 * 1024;
@@ -26,7 +27,8 @@ const SLICE_MS = 1000;
 const LOAD_MS = 1000;
 const encoder = new TextEncoder();
 
-export type ScriptLimits = { sliceMs?: number };
+/** sliceMs：一段同步执行的上限；maxCalls：一次执行最多发起多少个调用，缺省不限 */
+export type ScriptLimits = { sliceMs?: number; maxCalls?: number };
 /** 宿主函数的名字：建底子时占好，恢复后接上 */
 const HOST = ["__host_call", "__host_tools"] as const;
 
@@ -88,7 +90,8 @@ export async function compileScript(pkg: string, dir: string, limits: ScriptLimi
       output: output && z.fromJSONSchema(output as never),
       schemas: { input, output },
       source: code,
-      impl: (ctx, input) => execute(pkg, code, key, input, ctx, limits.sliceMs ?? SLICE_MS),
+      // console 的输出现在丢掉（以后经事件）
+      impl: async (ctx, input) => (await execute(pkg, code, key, input, ctx, limits)).value,
     };
   }
   // 不认得的键照样交给内核，由它报错
@@ -113,8 +116,19 @@ async function declare(pkg: string, dir: string): Promise<[code: string, decl: D
   }
 }
 
-/** 在一个全新的解释器里执行包的一个 Operation */
-async function execute(pkg: string, code: string, key: string, input: unknown, ctx: Ctx, sliceMs: number): Promise<unknown> {
+/**
+ * 在一个全新的解释器里跑一段源码：默认导出 async (ctx, input) => 结果。返回结果与 console 的输出。
+ * 源码写错、import 了不许的，以异常报出，带行列
+ */
+export async function runSource(source: string, input: unknown, ctx: Ctx, limits: ScriptLimits = {}): Promise<Outcome> {
+  return execute("source", await bundleSource(source), null, input, ctx, limits);
+}
+
+type Outcome = { value: unknown; logs: string[] };
+
+/** 在一个全新的解释器里执行包的一个 Operation；key 为 null 时执行默认导出的函数 */
+async function execute(pkg: string, code: string, key: string | null, input: unknown, ctx: Ctx, limits: ScriptLimits): Promise<Outcome> {
+  const { sliceMs = SLICE_MS, maxCalls = Infinity } = limits;
   const { wasm, extensions, snapshot } = await getBase();
   let deadline = Infinity;
   let interrupted = false;
@@ -125,7 +139,7 @@ async function execute(pkg: string, code: string, key: string, input: unknown, c
     interruptHandler: () => (performance.now() > deadline ? (interrupted = true) : false),
   });
 
-  const done = Promise.withResolvers<unknown>();
+  const done = Promise.withResolvers<Outcome>();
   /** 正在解释器里执行的层数：宿主函数是在解释器执行中被调的，那时不能丢掉解释器 */
   let busy = 0;
   let over = false;
@@ -161,7 +175,9 @@ async function execute(pkg: string, code: string, key: string, input: unknown, c
     }
   };
 
+  let calls = 0;
   vm.registerHostCallback("__host_call", (request) => {
+    if (++calls > maxCalls) throw new Error(`more than ${maxCalls} calls`);
     const { name, input } = JSON.parse(request.toString()) as { name: string; input: unknown };
     const deferred = vm.newPromise();
     void ctx.call(name, input).then((result) =>
@@ -186,7 +202,7 @@ async function execute(pkg: string, code: string, key: string, input: unknown, c
     void vm.resolvePromise(promise).then((outcome) => {
       if (over) return;
       if ("error" in outcome) fail(toError(outcome.error));
-      else end(() => done.resolve((JSON.parse(outcome.value.toString()) as { value?: unknown }).value));
+      else end(() => done.resolve(JSON.parse(outcome.value.toString()) as Outcome));
     });
     promise.dispose();
     vm.executePendingJobs();

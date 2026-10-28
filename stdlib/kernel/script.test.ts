@@ -80,7 +80,7 @@ describe("script 包", () => {
     expect(await kernel.reap(kernel.submit("relay_bye", { name: "张三" }))).toEqual({ ok: true, value: "再见，张三" });
 
     // 插件 import 的 plugin、decorator 在解释器里的 stdlib 没有：打包即失败
-    await expect(loadScript(new Kernel(), fixture("greet"))).rejects.toThrow('greet: No matching export in "harness-base:stdlib" for import "decorator"');
+    await expect(loadScript(new Kernel(), fixture("greet"))).rejects.toThrow('greet: 4:10 No matching export in "harness-base:stdlib" for import "decorator"');
     await expect(loadPlugin(new Kernel(), fixture("relay"))).rejects.toThrow("relay: default export is not plugin()");
   });
 });

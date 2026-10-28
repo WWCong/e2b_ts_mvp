@@ -35,6 +35,11 @@ export function op<S extends z.ZodType, O, A extends boolean = false>(decl: {
   /** 公开的写 false：只给 script 调，不交给模型（如调模型的、取时间的） */
   tool?: boolean;
   /**
+   * 实现跑的是 script 代码（如 harness_exec 现场给的源码）：它发起的调用按 script 的规则，只能调公开的。
+   * script 包的 Operation 不用写，都是
+   */
+  script?: boolean;
+  /**
    * 能对外：可以列进服务接口的 expose（装配配置）。插件只能声明自己的 Operation；
    * 对不对外由装配决定。api 的必须写 usage 与 output
    */

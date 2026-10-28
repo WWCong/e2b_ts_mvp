@@ -48,7 +48,7 @@ describe("script 包在解释器里跑", () => {
     expect(await run("probe_globals")).toEqual({
       ok: true,
       value: {
-        types: ["process", "Bun", "fetch", "require", "setTimeout", "setInterval", "performance", "console"].map((name) => [name, "undefined"]),
+        types: ["process", "Bun", "fetch", "require", "setTimeout", "setInterval", "performance"].map((name) => [name, "undefined"]),
         now: unavailable("Date.now()"),
         newDate: unavailable("new Date()"),
         epoch: "1970-01-01T00:00:00.000Z",

@@ -1,7 +1,7 @@
 /**
  * 终端客户端画 Run 树时，MVP 各 Operation 的入参、出参怎么摘要：历史只给条数（kv 里存的对话历史也是）；model_complete 只取要点
  * （几条消息几个工具，模型要调谁或回答了什么）；model_compact 只看压没压；agent_assist 与 chat_say 只看这一句与回答；
- * harness_park 的入参只看 payload（要问的问题）。只影响显示；返回 undefined 用缺省的截断 JSON
+ * harness_park 的入参只看 payload（要问的问题）；harness_exec 只看脚本有几行、结果与输出几行。只影响显示；返回 undefined 用缺省的截断 JSON
  */
 
 import type { Brief } from "./console";
@@ -11,6 +11,12 @@ export const brief: Brief = (operation, side, value) => {
   switch (`${operation} ${side}`) {
     case "harness_park input":
       return short((value as { payload: unknown }).payload);
+    case "harness_exec input":
+      return `(${(value as { source: string }).source.trim().split("\n").length} 行脚本)`;
+    case "harness_exec output": {
+      const { value: result, logs } = value as { value: unknown; logs: string[] };
+      return `→ ${short(result)}${logs.length > 0 ? `（输出 ${logs.length} 行）` : ""}`;
+    }
     case "chat_say input": {
       const { text, images } = value as { text: unknown; images?: unknown[] };
       return `${short(text)}${images?.length ? `（带 ${images.length} 张图）` : ""}`;

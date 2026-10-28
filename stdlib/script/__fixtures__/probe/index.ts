@@ -37,7 +37,7 @@ export default script({
       usage: "看全局",
       input: z.null(),
       impl: async () => ({
-        types: ["process", "Bun", "fetch", "require", "setTimeout", "setInterval", "performance", "console"].map((name) => [name, typeof (globalThis as Record<string, unknown>)[name]]),
+        types: ["process", "Bun", "fetch", "require", "setTimeout", "setInterval", "performance"].map((name) => [name, typeof (globalThis as Record<string, unknown>)[name]]),
         now: probe(() => Date.now()),
         newDate: probe(() => new Date()),
         epoch: probe(() => new Date(0).toISOString()),
