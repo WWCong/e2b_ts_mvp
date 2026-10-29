@@ -1,7 +1,7 @@
 /**
  * HTTP 服务接口（装配配置 serve.http）。只提供装配配置 expose 里列出的 Operation（都须声明了 api，宿主启动前查过）。
  * 请求头 harness-client 是调用方自报的名字，记进树的 origin（http:名字），客户端重连后据它认出自己发起的树；
- * 它只是个标签。配了令牌（token）时每个请求都要带 authorization: Bearer <令牌>，没带或不对是 401。请求与响应都是 JSON：
+ * 还没有认证，它只是个标签。请求与响应都是 JSON：
  * - GET  /operations        对外的 Operation：名字、说明、入参与出参的 JSON Schema
  * - POST /operations/:name  调用，请求体是入参（空即 {}）。等到结束，返回 { runId, result } 并取走结果；
  *                           等的途中断开，树照常跑完，结果留着，之后按 runId 取。带 ?async 立即返回 202 { runId }
@@ -13,30 +13,25 @@
  *                           没有事件时每隔几秒发一行注释，免得被当成空闲连接断开
  * 调用被拒（result.ok 为 false）也是 200：拒绝是调用的结果（R16）。请求本身不成立（不是 api、入参不符、
  * 没有这个 park、正在关停等）是 400，没对外的 Operation、没有这棵树或这个路由是 404，响应体 { error }。
- * 监听 Unix socket（本地；文件权限只给本用户）或 TCP（缺省只绑 127.0.0.1）。TCP 绑到本机以外（如沙盒里绑 0.0.0.0、
- * 经公网地址访问）必须配令牌，不配启动即失败。
+ * 监听 Unix socket（本地；文件权限只给本用户）或 TCP（缺省只绑 127.0.0.1）。没有认证：TCP 只开在本机，
+ * 或放在把关的网关后面（如沙盒应用：沙盒在隔离的内网，进来的请求都经业务网关）。
  */
 
-import { timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import type { HarnessEvent } from "../kernel/events";
 import type { Outside } from "../kernel/outside";
 import type { Service } from "./service";
 
-/** socket 与 port 二选一；expose：对外的 Operation，不在里面的一律当作没有；token：令牌，给了就每个请求都要带 */
-export type HttpConfig = { socket?: string; port?: number; hostname?: string; token?: string; expose: string[] };
-
-const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
+/** socket 与 port 二选一；expose：对外的 Operation，不在里面的一律当作没有 */
+export type HttpConfig = { socket?: string; port?: number; hostname?: string; expose: string[] };
 
 const encoder = new TextEncoder();
 
 export async function httpService(config: HttpConfig): Promise<Service> {
-  const { socket, port, hostname = "127.0.0.1", token } = config;
+  const { socket, port, hostname = "127.0.0.1" } = config;
   const expose = new Set(config.expose);
   if ((socket === undefined) === (port === undefined)) throw new Error("serve.http needs exactly one of socket and port");
-  if (port !== undefined && !LOOPBACK.has(hostname) && !token) throw new Error(`serve.http on ${hostname} needs a token`);
-  const authorized = token === undefined ? () => true : bearer(token);
   if (socket) await claim(socket);
   let server: ReturnType<typeof Bun.serve> | undefined;
   /** 连着的事件流 */
@@ -66,7 +61,7 @@ export async function httpService(config: HttpConfig): Promise<Service> {
       ctx.subscribe((event: HarnessEvent) => broadcast(encoder.encode(`data: ${JSON.stringify(event)}\n\n`)));
       // 事件流可能很久没有事件，Bun 会当它空闲断开（缺省 10 秒，Unix socket 上也是）：隔几秒发一行注释
       heartbeat = setInterval(() => broadcast(encoder.encode(": \n\n")), 5_000);
-      const fetch = (req: Request) => (authorized(req) ? route(req, outsideOf(req), expose, streams) : error(401, "unauthorized"));
+      const fetch = (req: Request) => route(req, outsideOf(req), expose, streams);
       // 等结果的请求也可能很久不说话：TCP 关掉空闲超时
       server = socket ? Bun.serve({ unix: socket, fetch }) : Bun.serve({ port, hostname, idleTimeout: 0, fetch });
       if (socket) chmodSync(socket, 0o600);
@@ -79,16 +74,6 @@ export async function httpService(config: HttpConfig): Promise<Service> {
       streams.clear();
       if (socket) rmSync(socket, { force: true });
     },
-  };
-}
-
-/** 请求带没带对令牌：authorization: Bearer <令牌>。比对摘要，不让比对的耗时泄露令牌 */
-function bearer(token: string): (req: Request) => boolean {
-  const hash = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest();
-  const expected = hash(token);
-  return (req) => {
-    const got = req.headers.get("authorization")?.match(/^Bearer (.+)$/)?.[1];
-    return got !== undefined && timingSafeEqual(hash(got), expected);
   };
 }
 

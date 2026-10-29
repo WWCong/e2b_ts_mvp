@@ -1,7 +1,7 @@
 /**
  * 客户端这一侧的 HTTP 客户端：经服务接口（服务端见 stdlib/serve/http.ts）用 Harness，各个应用的客户端共用。
  * 它在 Harness 外面，只能做服务接口允许的事：调 expose 里的 Operation、取结果、回答问题、看事件。
- * 连本地的 Unix socket，或一个 URL（TCP，如沙盒的公网地址），后者可带服务接口要的令牌。
+ * 连本地的 Unix socket，或一个 URL（TCP）。
  * client 是自报的名字，记进它发起的树的 origin（http:名字），重连后据它认出自己上次发起的树。
  */
 
@@ -34,14 +34,13 @@ export type Client = {
   events(onEvent: (event: HarnessEvent) => void, signal?: AbortSignal): Promise<{ closed: Promise<void> }>;
 };
 
-/** 连哪个服务接口：本地的 Unix socket，或 URL（如 http://127.0.0.1:8081）；token 是服务接口要的令牌 */
-export type Target = { socket: string } | { url: string; token?: string };
+/** 连哪个服务接口：本地的 Unix socket，或 URL（如 http://127.0.0.1:8081） */
+export type Target = { socket: string } | { url: string };
 
-/** 一次请求：Target 决定连哪、带什么头 */
-function send(target: Target, path: string, init: RequestInit & { headers?: Record<string, string> } = {}): Promise<Response> {
+/** 一次请求：Target 决定连哪 */
+function send(target: Target, path: string, init: RequestInit = {}): Promise<Response> {
   if ("socket" in target) return fetch(`http://harness${path}`, { ...init, unix: target.socket });
-  const headers = target.token ? { ...init.headers, authorization: `Bearer ${target.token}` } : init.headers;
-  return fetch(`${target.url.replace(/\/$/, "")}${path}`, { ...init, headers });
+  return fetch(`${target.url.replace(/\/$/, "")}${path}`, init);
 }
 
 /** 连 HTTP 服务接口 */
@@ -94,7 +93,7 @@ export function httpClient(options: Target & { name: string }): Client {
   };
 }
 
-/** 那里有没有活着的服务（连得上就算，令牌不对也算：服务在） */
+/** 那里有没有活着的服务 */
 export async function reachable(target: Target): Promise<boolean> {
   try {
     await send(target, "/operations", { signal: AbortSignal.timeout(1000) });

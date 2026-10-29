@@ -6,5 +6,3 @@ const env = process.env;
 export const home = env.SANDBOX_HOME || ".sandbox";
 /** 管理口的端口 */
 export const adminPort = Number(env.SANDBOX_ADMIN_PORT || 8081);
-/** 管理口的令牌：监听在本机以外（沙盒里）时必须有 */
-export const adminToken = env.SANDBOX_ADMIN_TOKEN || undefined;

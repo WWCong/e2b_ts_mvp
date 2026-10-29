@@ -14,10 +14,10 @@
     "paths": {
       "stdlib": ["./stdlib/index.ts"],
       "stdlib/*": ["./stdlib/*"],
-      "client/*": ["./client/*"],
+      "pkg/*": ["./app/pkg/*"],
       "pi-tools": ["./node_modules/@earendil-works/pi-coding-agent/dist/core/tools/index"],
       "pi-utils/*": ["./node_modules/@earendil-works/pi-coding-agent/dist/utils/*"]
     }
   },
-  "include": ["stdlib", "client"]
+  "include": ["stdlib", "app/pkg"]
 }

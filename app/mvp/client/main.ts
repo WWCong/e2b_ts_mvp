@@ -9,8 +9,8 @@
 
 import { socket } from "../paths";
 import { brief } from "./brief";
-import { runConsole } from "client/console";
-import { httpClient, reachable } from "client/http";
+import { runConsole } from "pkg/client/console";
+import { httpClient, reachable } from "pkg/client/http";
 
 /** 开一个终端客户端，退出时返回；signal 让它退出 */
 export function chat(options: { first?: string; signal?: AbortSignal } = {}) {

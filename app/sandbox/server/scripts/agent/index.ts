@@ -6,9 +6,8 @@
  * 交给模型的前缀逐字节不变。对话存在哪由调用方决定，agent 本身不存状态。
  * 图片：这一句可以带图片（images，base64），与文字一起作为用户消息交给模型；工具结果带图片的（ToolContent，
  * 如 fs_read 读到图片）原样放进工具结果。模型不支持看图时由 pi-ai 换成占位文字。
- * 每轮开头经 model_compact 检查一次历史，超过 COMPACT_OVER（估计的 token 数）就压缩（8.3）；
- * 压缩后的历史随出参交回，下一轮从它开始，同一段只压一次。
- * 人设、压缩时机、轮数上限都写在这里：要换就复制这个包改（R7）。
+ * 不压缩历史（这个应用的 model 没有 model_compact）：对话太长时管理员用 /new 开始新对话。
+ * 人设、轮数上限都写在这里：要换就复制这个包改（R7）。
  */
 
 import type { Message, ToolCall } from "@earendil-works/pi-ai";
@@ -20,8 +19,6 @@ const PERSONA =
   "用户要你写 script 包时，在工作区里写草稿，用 harness_exec 试跑，跑通了再用 package_install 装上。" +
   "信息不够或有几种做法需要用户拍板时，用 ui_ask 问用户。做完后用中文简要回答用户。";
 const MAX_TURNS = 20;
-/** 历史估计超过这么多 token 就在轮初压缩 */
-const COMPACT_OVER = 60_000;
 
 const assist = op({
   usage: "管理助手：把这一句（可带图片）连同之前的历史交给模型，模型按需读写文件、问管理员，返回回答与更新后的历史",
@@ -35,10 +32,8 @@ const assist = op({
   only: ["fs", "model", "ui", "time", "harness_exec", "package_install"],
   impl: async (ctx, input) => {
     const tools = ctx.tools();
-    const compacted = await ctx.ops.model.compact({ history: input.history, over: COMPACT_OVER });
-    if (!compacted.ok) throw new Error(`model_compact rejected by ${compacted.by}: ${compacted.reason}`);
     const content = input.images.length > 0 ? [{ type: "text" as const, text: input.prompt }, ...input.images.map((i) => ({ type: "image" as const, ...i }))] : input.prompt;
-    const history: Message[] = [...compacted.value.history, { role: "user", content, timestamp: await now(ctx) }];
+    const history: Message[] = [...input.history, { role: "user", content, timestamp: await now(ctx) }];
 
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       const r = await ctx.ops.model.complete({ systemPrompt: PERSONA, messages: history, tools });

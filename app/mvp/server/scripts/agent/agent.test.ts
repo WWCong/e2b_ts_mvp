@@ -51,7 +51,7 @@ async function boot(journalDir?: string) {
   };
   await infra.workspace!.open();
   for (const pkg of ["harness", "time", "ui"]) await loadPlugin(k, `stdlib/plugins/${pkg}`);
-  for (const pkg of ["fs", "model"]) await loadPlugin(k, `stdlib/plugins/${pkg}`, {}, infra);
+  for (const pkg of ["fs", "model"]) await loadPlugin(k, join(import.meta.dir, "..", "..", "plugins", pkg), {}, infra);
   await loadScript(k, import.meta.dir);
   const roots = await k.boot();
   return { kernel: k, events: log, roots };

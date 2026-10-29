@@ -1,10 +1,10 @@
 /**
  * MVP 的服务端，即它的 Harness：装配交给宿主（stdlib 的 host），bun run serve 起它。分四层：
  * - 基建（infra）：Harness 外面给的能力——模型后端、工作区、持久状态。换实现（比如工作区换成 rclone+FUSE 挂载）只改这里
- * - 领域（plugins）：插件，都是 stdlib 自带的（fs、model、ui、kv、package 等）；插件声明需要哪些基建，宿主注入
+ * - 领域（plugins）：插件，fs、model 与 stdlib 自带的 ui、kv、package 等；插件声明需要哪些基建，宿主注入
  * - 应用（scripts）：script 包 agent、chat，编排：在解释器（QuickJS）里跑，只能调公开的 Operation，碰不到基建（状态存在 kv 里）
  * - 接口（serve）：哪些 Operation 怎么对外
- * 改了 scripts 里的包，运行中的 Harness 自动重新装载（watch）；改了插件要重启。
+ * 改了 scripts 里的包，运行中的 Harness 自动重新装载（watch）；改了 plugins 要重启。
  * 工作区里试好的 script 包草稿经 package_install 装上（先问人），在 STATE_DIR/scripts/ 下，重启后还在。
  * 界面不在这里：MVP 的客户端（../client）经服务接口连上来，和网页、别的系统一样；bun start 把两边一起起（../start.ts）。
  * 本地状态都在 STATE_DIR 下，在工作区之外：写前日志在 journal/，插件的存储在 store/<包名>/（chat 的对话历史在 kv 的那块里：store/kv/chat/），
@@ -19,6 +19,7 @@ import { piLlm } from "stdlib/infra/llm";
 import { localDir } from "stdlib/infra/volume";
 import { socket, stateDir } from "../paths";
 
+const plugin = (name: string) => join(import.meta.dir, "plugins", name);
 const script = (name: string) => join(import.meta.dir, "scripts", name);
 const env = process.env;
 
@@ -34,8 +35,8 @@ await host({
     "stdlib/plugins/ui",
     "stdlib/plugins/kv",
     "stdlib/plugins/package",
-    "stdlib/plugins/fs",
-    "stdlib/plugins/model",
+    plugin("fs"),
+    plugin("model"),
   ],
   scripts: [script("agent"), script("chat")],
   watch: true,

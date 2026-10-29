@@ -1,11 +1,12 @@
 /**
  * 管理员的终端画 Run 树时，这个应用自己的 Operation 怎么摘要：admin_say 与 agent_assist 只看这一句与回答；
- * stdlib 自带插件的交给 client/brief.ts。只影响显示；返回 undefined 用缺省的截断 JSON
+ * model_complete 只取要点（几条消息几个工具，模型要调谁或回答了什么）。
+ * stdlib 自带插件的交给 pkg/client/brief.ts。只影响显示；返回 undefined 用缺省的截断 JSON
  */
 
-import { stdlibBrief } from "client/brief";
-import type { Brief } from "client/console";
-import { short } from "client/console/tree";
+import { stdlibBrief } from "pkg/client/brief";
+import type { Brief } from "pkg/client/console";
+import { short } from "pkg/client/console/tree";
 
 export const brief: Brief = (operation, side, value) => {
   switch (`${operation} ${side}`) {
@@ -20,6 +21,14 @@ export const brief: Brief = (operation, side, value) => {
     }
     case "agent_assist output":
       return `→ ${short((value as { answer: unknown }).answer)}`;
+    case "model_complete input": {
+      const { messages, tools } = value as { messages: unknown[]; tools: unknown[] };
+      return `(${messages.length} 条消息, ${tools.length} 个工具)`;
+    }
+    case "model_complete output": {
+      const { calls, answer } = value as { calls: { name: string; arguments: unknown }[]; answer: string | null };
+      return calls.length > 0 ? `→ ${calls.map((c) => `${c.name} ${short(c.arguments)}`).join(", ")}` : `→ ${short(answer)}`;
+    }
   }
   return stdlibBrief(operation, side, value);
 };

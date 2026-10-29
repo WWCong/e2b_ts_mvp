@@ -8,7 +8,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { chat } from "./client/main";
-import { reachable } from "client/http";
+import { reachable } from "pkg/client/http";
 import { socket } from "./paths";
 
 const quit = new AbortController();

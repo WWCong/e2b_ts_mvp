@@ -1,17 +1,17 @@
 /**
- * 管理员的终端（bun run sandbox:admin）：带令牌经管理口连上沙盒的 Harness（../server），和管理 agent 对话。
+ * 管理员的终端（bun run sandbox:admin）：经管理口连上沙盒的 Harness（../server），和管理 agent 对话。
  * 普通一行调 admin_say，/new 调 admin_reset，开场调 admin_greet；要管理员回答的问题（如审批）在这里问；事件流画成 Run 树。
- * 连哪：SANDBOX_ADMIN_URL（如沙盒的 https://8081-<沙盒 id>.e2b.app），缺省本机的 SANDBOX_ADMIN_PORT；令牌 SANDBOX_ADMIN_TOKEN。
+ * 连哪：SANDBOX_ADMIN_URL，缺省本机的 SANDBOX_ADMIN_PORT。
  * 用法：bun run sandbox:admin；bun run sandbox:admin "第一句话"。/exit、Ctrl-D 或 Ctrl-C 退出——只是终端走了，
  * 在途的那一轮在 Harness 里接着做，再连上时先问还在等的问题、再显示那一轮的结果。
  */
 
-import { runConsole } from "client/console";
-import { httpClient, reachable } from "client/http";
-import { adminPort, adminToken } from "../config";
+import { runConsole } from "pkg/client/console";
+import { httpClient, reachable } from "pkg/client/http";
+import { adminPort } from "../config";
 import { brief } from "./brief";
 
-const target = { url: process.env.SANDBOX_ADMIN_URL || `http://127.0.0.1:${adminPort}`, token: adminToken };
+const target = { url: process.env.SANDBOX_ADMIN_URL || `http://127.0.0.1:${adminPort}` };
 
 if (!(await reachable(target))) {
   console.error(`连不上沙盒的管理口（${target.url}）：先 bun run sandbox:serve，或设好 SANDBOX_ADMIN_URL`);
