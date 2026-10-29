@@ -1,7 +1,8 @@
 /**
  * HTTP 服务接口（装配配置 serve.http）。只提供装配配置 expose 里列出的 Operation（都须声明了 api，宿主启动前查过）。
  * 请求头 harness-client 是调用方自报的名字，记进树的 origin（http:名字），客户端重连后据它认出自己发起的树；
- * 还没有认证，它只是个标签。请求与响应都是 JSON：
+ * 它只是个标签。配了 callers 时，请求带的 authorization: Bearer <令牌>（网关签发的 JWT）记进调用者的凭据，
+ * 发起的树记下这个调用者（Ctx.caller，见 stdlib/infra/callers.ts）。请求与响应都是 JSON：
  * - GET  /operations        对外的 Operation：名字、说明、入参与出参的 JSON Schema
  * - POST /operations/:name  调用，请求体是入参（空即 {}）。等到结束，返回 { runId, result } 并取走结果；
  *                           等的途中断开，树照常跑完，结果留着，之后按 runId 取。带 ?async 立即返回 202 { runId }
@@ -21,10 +22,11 @@ import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import type { HarnessEvent } from "../kernel/events";
 import type { Outside } from "../kernel/outside";
+import type { Callers } from "../infra/callers";
 import type { Service } from "./service";
 
-/** socket 与 port 二选一；expose：对外的 Operation，不在里面的一律当作没有 */
-export type HttpConfig = { socket?: string; port?: number; hostname?: string; expose: string[] };
+/** socket 与 port 二选一；expose：对外的 Operation，不在里面的一律当作没有；callers：记下请求带的调用者令牌 */
+export type HttpConfig = { socket?: string; port?: number; hostname?: string; expose: string[]; callers?: Callers };
 
 const encoder = new TextEncoder();
 
@@ -61,7 +63,11 @@ export async function httpService(config: HttpConfig): Promise<Service> {
       ctx.subscribe((event: HarnessEvent) => broadcast(encoder.encode(`data: ${JSON.stringify(event)}\n\n`)));
       // 事件流可能很久没有事件，Bun 会当它空闲断开（缺省 10 秒，Unix socket 上也是）：隔几秒发一行注释
       heartbeat = setInterval(() => broadcast(encoder.encode(": \n\n")), 5_000);
-      const fetch = (req: Request) => route(req, outsideOf(req), expose, streams);
+      const callerOf = (req: Request) => {
+        const token = req.headers.get("authorization")?.match(/^Bearer (.+)$/)?.[1];
+        return token && config.callers?.put(token);
+      };
+      const fetch = (req: Request) => route(req, outsideOf(req), callerOf(req) || undefined, expose, streams);
       // 等结果的请求也可能很久不说话：TCP 关掉空闲超时
       server = socket ? Bun.serve({ unix: socket, fetch }) : Bun.serve({ port, hostname, idleTimeout: 0, fetch });
       if (socket) chmodSync(socket, 0o600);
@@ -92,6 +98,7 @@ async function claim(socket: string): Promise<void> {
 async function route(
   req: Request,
   outside: Outside,
+  caller: string | undefined,
   expose: Set<string>,
   streams: Set<ReadableStreamDefaultController<Uint8Array>>,
 ): Promise<Response> {
@@ -105,7 +112,7 @@ async function route(
         return json(outside.operations().filter((o) => expose.has(o.name)));
       case "POST /operations/:id": {
         if (!expose.has(id!)) return error(404, `not exposed: ${id}`);
-        const runId = outside.submit(id!, await body(req));
+        const runId = outside.submit(id!, await body(req), caller);
         if (searchParams.has("async")) return json({ runId }, 202);
         return await deliver(outside, runId, req.signal);
       }

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { Kernel, op, type HarnessEvent } from "stdlib";
+import { callers } from "stdlib/infra/callers";
 import { httpService } from "stdlib/serve/http";
 import type { Service } from "stdlib/serve/service";
 import { httpClient, reachable } from "./http";
@@ -71,21 +72,24 @@ describe("HTTP 客户端", () => {
     expect(await reachable({ socket: `${socket}.nope` })).toBe(false);
   });
 
-  test("经 URL 连 TCP 上的服务接口", async () => {
+  test("经 URL 连 TCP 上的服务接口，带上调用者的令牌", async () => {
     const kernel = new Kernel();
     kernel.use("demo", {
-      operations: { echo: op({ api: true, usage: "回显", input: z.object({ text: z.string() }), output: z.string(), impl: async (_c, { text }) => text }) },
+      operations: {
+        echo: op({ api: true, usage: "回显", input: z.object({ text: z.string() }), output: z.string(), impl: async (ctx, { text }) => `${ctx.caller}: ${text}` }),
+      },
     });
     const probe = Bun.serve({ port: 0, fetch: () => new Response() });
     const port = probe.port!;
     probe.stop(true);
-    const service = await httpService({ port, expose: ["demo_echo"] });
+    const service = await httpService({ port, expose: ["demo_echo"], callers: callers() });
     services.push(service);
     await kernel.boot();
     service.listen({ outside: (origin) => kernel.outside(origin), subscribe: (fn) => kernel.events.subscribe(fn) });
     const url = `http://127.0.0.1:${port}/`;
 
-    expect(await httpClient({ url, name: "t" }).call("demo_echo", { text: "hi" })).toMatchObject({ result: { ok: true, value: "hi" } });
+    const token = `e30.${Buffer.from(JSON.stringify({ sub: "alice" })).toString("base64url")}.sig`;
+    expect(await httpClient({ url, token, name: "t" }).call("demo_echo", { text: "hi" })).toMatchObject({ result: { ok: true, value: "alice: hi" } });
     expect(await reachable({ url })).toBe(true);
     expect(await reachable({ url: `http://127.0.0.1:${port + 1}` })).toBe(false);
   });

@@ -87,6 +87,20 @@ describe("harness_exec", () => {
     expect(await exec(source)).toEqual({ ok: true, value: [100, "more than 100 calls"] });
   });
 
+  test("脚本里的 ctx.caller 是这棵树的调用者", async () => {
+    const { kernel } = await setup();
+    kernel.register({
+      name: "demo_via",
+      api: true,
+      usage: "经 harness_exec 跑一段",
+      input: z.object({}),
+      output: z.unknown(),
+      impl: (ctx) => ctx.call("harness_exec", { source: "export default async (ctx) => ctx.caller" }),
+    });
+
+    expect(await kernel.reap(kernel.outside("t").submit("demo_via", {}, "alice"))).toEqual({ ok: true, value: { ok: true, value: "alice" } });
+  });
+
   test("ctx.spawn 另起一棵树，不等它：拿到 runId；只能 spawn 公开的；与调用一起算次数", async () => {
     const { exec, events, doubled } = await setup();
     const source = `

@@ -16,8 +16,8 @@ export type ParkInfo = { id: string; root: string; operation: string; schema: Re
 export type ApiInfo = { name: string; usage: string; input: Record<string, unknown>; output: Record<string, unknown> };
 
 export type Outside = {
-  /** 按名字起一棵 Run 树，返回根的 runId；只能调声明了 api 的 Operation */
-  submit(name: string, input: unknown): string;
+  /** 按名字起一棵 Run 树，返回根的 runId；只能调声明了 api 的 Operation。caller 是这次请求的调用者（见 Ctx.caller） */
+  submit(name: string, input: unknown, caller?: string): string;
   /** 结果还没被取走的树（谁发起的都列）。后续：有了认证按调用方过滤 */
   runs(): RunInfo[];
   /** 等树结束，不取走结果 */

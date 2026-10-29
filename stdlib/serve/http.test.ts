@@ -4,6 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { callers } from "../infra/callers";
 import { Kernel } from "../kernel/kernel";
 import type { ParkInfo } from "../kernel/outside";
 import { op } from "../kernel/plugin";
@@ -162,6 +163,27 @@ describe("HTTP 服务接口", () => {
     ]);
     expect(events[0]!.origin).toBe("http:test");
     await reader.cancel();
+  });
+
+  test("调用者：配了 callers，请求带的 Bearer 令牌记进调用者的凭据，发起的树记下调用者；没带的没有调用者", async () => {
+    const socket = join(await mkdtemp(join(tmpdir(), "http-")), "h.sock");
+    const kernel = new Kernel();
+    kernel.use("demo", {
+      operations: { who: op({ api: true, usage: "是谁", input: z.object({}), output: z.string(), impl: async (ctx) => ctx.caller ?? "没人" }) },
+    });
+    const store = callers();
+    const service = await httpService({ socket, expose: ["demo_who"], callers: store });
+    services.push(service);
+    await kernel.boot();
+    service.listen({ outside: (origin) => kernel.outside(origin), subscribe: (fn) => kernel.events.subscribe(fn) });
+    const who = async (headers: Record<string, string> = {}) =>
+      ((await (await fetch("http://harness/operations/demo_who", { unix: socket, method: "POST", body: "{}", headers })).json()) as { result: { value: string } })
+        .result.value;
+    const token = `e30.${Buffer.from(JSON.stringify({ sub: "alice" })).toString("base64url")}.sig`;
+
+    expect(await who({ authorization: `Bearer ${token}` })).toBe("alice");
+    expect(await store.get("alice")).toBe(token);
+    expect(await who()).toBe("没人");
   });
 
   test("socket 已有活着的服务：报错，不去动它；上次留下的死 socket 文件删掉再监听；关停完删掉 socket 文件", async () => {

@@ -15,13 +15,13 @@ import { z } from "zod";
 import { image, isToolContent, op, opaque, script, type Ctx, type Result } from "stdlib";
 
 const PERSONA =
-  "你是这台沙盒服务器的管理助手，替管理员打理它。需要查看或修改工作区里的文件时使用工具；要连着调很多次工具（批量读、统计、按结果分支）时，用 harness_exec 写一段脚本一次做完。" +
+  "你是这台沙盒服务器的管理助手，替用户打理它。需要查看或修改工作区里的文件时使用工具；要连着调很多次工具（批量读、统计、按结果分支）时，用 harness_exec 写一段脚本一次做完。" +
   "用户要你写 script 包时，在工作区里写草稿，用 harness_exec 试跑，跑通了再用 package_install 装上。" +
   "信息不够或有几种做法需要用户拍板时，用 ui_ask 问用户。做完后用中文简要回答用户。";
 const MAX_TURNS = 20;
 
 const assist = op({
-  usage: "管理助手：把这一句（可带图片）连同之前的历史交给模型，模型按需读写文件、问管理员，返回回答与更新后的历史",
+  usage: "管理助手：把这一句（可带图片）连同之前的历史交给模型，模型按需读写文件、问用户，返回回答与更新后的历史",
   input: z.object({
     prompt: z.string(),
     /** 随这一句发来的图片 */

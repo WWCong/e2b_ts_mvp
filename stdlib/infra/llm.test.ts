@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fauxAssistantMessage, fauxProvider, fauxText, type TranscriptContext } from "@earendil-works/pi-ai";
+import { callers } from "./callers";
 import { NO_VISION, piLlm } from "./llm";
 
 describe("piLlm", () => {
@@ -40,6 +41,36 @@ describe("piLlm", () => {
     const [toBlind, toSeeing] = sent.map((c) => c.messages.filter((m) => m.role !== "system").map((m) => (m as { content: unknown }).content));
     expect(toBlind).toEqual([[{ type: "text", text: "看图" }, { type: "text", text: NO_VISION }], [{ type: "text", text: NO_VISION }]]);
     expect(toSeeing).toEqual([[{ type: "text", text: "看图" }, image, image], [image]]);
+  });
+
+  test("用调用者的令牌：换了地址（如业务网关），按 OpenAI 协议发出，令牌放在 authorization 头里；没有调用者就不调", async () => {
+    const seen: { path: string; authorization: string | null }[] = [];
+    const chunk = (body: object) => `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 0, model: "deepseek-flash", ...body })}\n\n`;
+    const gateway = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        seen.push({ path: new URL(req.url).pathname, authorization: req.headers.get("authorization") });
+        const stream = [
+          chunk({ choices: [{ index: 0, delta: { role: "assistant", content: "你好" }, finish_reason: null }] }),
+          chunk({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
+          "data: [DONE]\n\n",
+        ].join("");
+        return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+      },
+    });
+    try {
+      const store = callers();
+      const caller = store.put("jwt-of-alice");
+      const llm = piLlm({ model: "deepseek/deepseek-flash", baseUrl: `http://127.0.0.1:${gateway.port}`, callers: store });
+      const context = { messages: [{ role: "user" as const, content: "hi", timestamp: 0 }] };
+
+      const reply = await llm.complete(context, { caller });
+      expect(reply.content).toEqual([{ type: "text", text: "你好" }]);
+      expect(seen).toEqual([{ path: "/chat/completions", authorization: "Bearer jwt-of-alice" }]);
+      await expect(llm.complete(context)).rejects.toThrow("no caller to call the model for");
+    } finally {
+      gateway.stop(true);
+    }
   });
 
   test("模型不存在：建的时候就失败（装配即失败）", () => {

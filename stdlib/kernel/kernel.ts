@@ -87,8 +87,8 @@ type Admitted = {
   skip?: ReadonlySet<string>;
 };
 
-/** 建 Run 的位置：深度，父（子调用），或发起方（spawn 起的根）；skip 是所在的树上不装载哪些包的装饰器 */
-type Place = { depth: number; parent?: string; spawnedBy?: string; skip?: ReadonlySet<string> };
+/** 建 Run 的位置：深度，父（子调用），或发起方（spawn 起的根）；skip 是所在的树上不装载哪些包的装饰器；caller 是树的调用者 */
+type Place = { depth: number; parent?: string; spawnedBy?: string; skip?: ReadonlySet<string>; caller?: string };
 
 /** 在途 Run 的内核侧记录；Run 退出或被杀后移除 */
 type LiveRun = {
@@ -392,14 +392,14 @@ export class Kernel {
   }
 
   /**
-   * 交给服务接口的对外接口（outside.ts）：调用只能调声明了 api 的 Operation，发起的树的根记下 origin，
+   * 交给服务接口的对外接口（outside.ts）：调用只能调声明了 api 的 Operation，发起的树的根记下 origin 与调用者，
    * 写进日志、重启后还在。其余同宿主
    */
   outside(origin: string): Outside {
     return {
-      submit: (name, input) => {
+      submit: (name, input, caller) => {
         if (this.operations.get(name)?.api !== true) throw new Error(`not an api operation: ${name}`);
-        return this.launch(name, input, origin);
+        return this.launch(name, input, origin, caller);
       },
       runs: () => this.runs(),
       wait: (runId) => this.wait(runId),
@@ -416,9 +416,9 @@ export class Kernel {
     return [...this.apis.values()].sort((a, b) => (a.name < b.name ? -1 : 1));
   }
 
-  private launch(name: string, input: unknown, origin?: string): string {
+  private launch(name: string, input: unknown, origin?: string, caller?: string): string {
     if (this.phase !== "running") throw new Error(`harness is ${this.phase}`);
-    const admitted = this.admit(name, input);
+    const admitted = this.admit(name, input, { depth: 0, caller });
     if ("ok" in admitted) throw new Error(admitted.reason);
     admitted.origin = origin;
     const veto = this.before("beforeRunStart", this.started(admitted));
@@ -475,7 +475,7 @@ export class Kernel {
       };
       const veto = this.before("beforeTreeRecover", tree);
       this.events.emit(tree);
-      const place = { depth: root.depth ?? 0, spawnedBy, skip: root.skipDecorators && new Set(root.skipDecorators) };
+      const place = { depth: root.depth ?? 0, spawnedBy, skip: root.skipDecorators && new Set(root.skipDecorators), caller: root.caller };
       let admitted = veto ?? this.admit(root.operation, root.input, place, this.resume(root.runId, runs));
       if (!("ok" in admitted)) {
         admitted.origin = root.origin;
@@ -633,26 +633,27 @@ export class Kernel {
   }
 
   /**
-   * ctx.call 的实现：发起 caller 的子调用并等它返回。
+   * ctx.call 的实现：发起 from 的子调用并等它返回。
    * 实现发起的给它的 Operation：查目标在不在它的能力面里，它是 script 的还查目标公开不公开；装饰器发起的调用不给、不查。
    */
-  private callChild(caller: LiveRun, name: string, input: unknown, op?: Operation): Promise<Result> {
-    const { run } = caller;
+  private callChild(from: LiveRun, name: string, input: unknown, op?: Operation): Promise<Result> {
+    const { run } = from;
     const alive = run.status === "running" || run.status === "waiting";
-    if (alive && this.phase === "stopping") return this.hold(caller);
-    const seq = caller.issued++;
+    if (alive && this.phase === "stopping") return this.hold(from);
+    const seq = from.issued++;
 
-    const same = alive ? this.replayed(caller, seq, "call", name, input) : undefined;
+    const same = alive ? this.replayed(from, seq, "call", name, input) : undefined;
     if (same && "ok" in same) return Promise.resolve(same);
     let resume: Resume | undefined;
     if (same) {
       // 已完成：按原完成顺序回送记下的结果，不执行、不过链、不再记
-      if (same.result) return caller.replay!.deliver(same.order!, same.result);
+      if (same.result) return from.replay!.deliver(same.order!, same.result);
       // 崩溃时在途：子 Run 用原 runId 重新执行（日志里已有它的 call 行，只记 retry）
-      if (same.child) resume = this.resume(same.child, caller.logs!);
+      if (same.child) resume = this.resume(same.child, from.logs!);
     }
 
-    let admitted = this.gate(caller, name, op) ?? this.admit(name, input, { depth: run.depth + 1, parent: run.runId, skip: caller.skip }, resume);
+    const place = { depth: run.depth + 1, parent: run.runId, skip: from.skip, caller: run.caller };
+    let admitted = this.gate(from, name, op) ?? this.admit(name, input, place, resume);
     if (!("ok" in admitted)) admitted = this.before("beforeRunStart", this.started(admitted, seq)) ?? admitted;
 
     // 先记后做：run.started 或 call.rejected 的提交阶段把这次调用落盘之后，子 Run 才开始执行、拒绝才交给调用方。
@@ -661,23 +662,24 @@ export class Kernel {
       this.events.emit({ type: "call.rejected", runId: run.runId, step: seq, target: name, input, result: admitted });
       return Promise.resolve(admitted);
     }
-    return this.execute(admitted, caller, seq);
+    return this.execute(admitted, from, seq);
   }
 
   /**
-   * ctx.spawn 的实现：以 caller 为发起方另起一棵树，不等它，返回新树根的 runId。by 是发起的包（实现的或装饰器的）：
-   * 新树上不装载它的装饰器，caller 所在的树不装载的也接着不装载（R14）。与 callChild 同样检查、同样记在 caller 名下：
-   * 恢复时重新执行到这一步不再发起，拿回原来的 runId。新树的 root 行先落盘，caller 的 spawn 行（run.spawned）后落盘
+   * ctx.spawn 的实现：以 from 为发起方另起一棵树，不等它，返回新树根的 runId。by 是发起的包（实现的或装饰器的）：
+   * 新树上不装载它的装饰器，from 所在的树不装载的也接着不装载（R14）。与 callChild 同样检查、同样记在 from 名下：
+   * 恢复时重新执行到这一步不再发起，拿回原来的 runId。新树的 root 行先落盘，from 的 spawn 行（run.spawned）后落盘。
+   * 新树的调用者同 from 的
    */
-  private spawnTree(caller: LiveRun, name: string, input: unknown, by: string, op?: Operation): Promise<Result> {
-    const { run } = caller;
+  private spawnTree(from: LiveRun, name: string, input: unknown, by: string, op?: Operation): Promise<Result> {
+    const { run } = from;
     const alive = run.status === "running" || run.status === "waiting";
-    if (alive && this.phase === "stopping") return this.hold(caller);
-    const seq = caller.issued++;
+    if (alive && this.phase === "stopping") return this.hold(from);
+    const seq = from.issued++;
 
-    const same = alive ? this.replayed(caller, seq, "spawn", name, input) : undefined;
+    const same = alive ? this.replayed(from, seq, "spawn", name, input) : undefined;
     if (same && "ok" in same) return Promise.resolve(same);
-    if (same) return caller.replay!.deliver(same.order, same.result);
+    if (same) return from.replay!.deliver(same.order, same.result);
     // 崩溃在新树的 root 行与这一步的 spawn 行之间：新树已经恢复了，接回它
     const key = `${run.runId}#${seq}`;
     const orphan = alive ? this.orphans.get(key) : undefined;
@@ -687,8 +689,8 @@ export class Kernel {
       return Promise.resolve({ ok: true, value: orphan.runId });
     }
 
-    const skip = new Set([...(caller.skip ?? []), by]);
-    let admitted = this.gate(caller, name, op) ?? this.admit(name, input, { depth: run.depth + 1, spawnedBy: run.runId, skip });
+    const skip = new Set([...(from.skip ?? []), by]);
+    let admitted = this.gate(from, name, op) ?? this.admit(name, input, { depth: run.depth + 1, spawnedBy: run.runId, skip, caller: run.caller });
     if (!("ok" in admitted)) admitted = this.before("beforeRunStart", this.started(admitted, seq)) ?? admitted;
     if ("ok" in admitted) {
       this.events.emit({ type: "call.rejected", runId: run.runId, step: seq, target: name, input, result: admitted, spawn: true });
@@ -703,28 +705,28 @@ export class Kernel {
   }
 
   /**
-   * 恢复重放：caller 的第 seq 步在日志里有记录时，比对类型、目标与入参摘要，对得上返回记录。
+   * 恢复重放：from 的第 seq 步在日志里有记录时，比对类型、目标与入参摘要，对得上返回记录。
    * 已完成的那一步对不上：代码看过它的结果、据此往下走过，判为对不上，返回拒绝。
    * 崩溃时在途的那一步对不上（比如 attempt > 1 时先查重）：结果从没交给过代码，允许换路，旧的在途调用作废，返回 undefined
    */
   private replayed<T extends "call" | "spawn">(
-    caller: LiveRun,
+    from: LiveRun,
     seq: number,
     type: T,
     name: string,
     input: unknown,
   ): Extract<Recorded, { type: T }> | Rejected | undefined {
-    const recorded = caller.replay?.at(seq);
+    const recorded = from.replay?.at(seq);
     if (!recorded) return undefined;
     const target = recorded.type === type && recorded.target === name;
     if (target && recorded.input === digest(input)) return recorded as Extract<Recorded, { type: T }>;
     if (!isDone(recorded)) return undefined;
-    return this.diverge(caller, seq, recorded, `${type} ${name}${target ? " with different input" : ""}`);
+    return this.diverge(from, seq, recorded, `${type} ${name}${target ? " with different input" : ""}`);
   }
 
   /** 调用与 spawn 共同的检查：发起方还在跑；实现发起的，目标在它的能力面里，它是 script 的还得目标公开（7.2） */
-  private gate(caller: LiveRun, name: string, op?: Operation): Rejected | undefined {
-    const { run } = caller;
+  private gate(from: LiveRun, name: string, op?: Operation): Rejected | undefined {
+    const { run } = from;
     if (run.status !== "running" && run.status !== "waiting") return reject("kernel", `caller is ${run.status}`);
     if (op && !inSurface(op, name)) return reject("kernel", `${name} is not in the surface of ${run.operation}`);
     // 没有这个 Operation 的照常由 admit 拒绝
@@ -741,7 +743,7 @@ export class Kernel {
     const op = this.operations.get(name);
     if (!op) return reject("kernel", `unknown operation: ${name}`);
 
-    const { depth, parent, spawnedBy, skip } = place;
+    const { depth, parent, spawnedBy, skip, caller } = place;
     if (depth > this.fuse.maxDepth) return reject("kernel", `max depth ${this.fuse.maxDepth} exceeded`);
     if (this.lives.size >= this.fuse.maxLiveRuns) return reject("kernel", `max live runs ${this.fuse.maxLiveRuns} exceeded`);
 
@@ -767,6 +769,7 @@ export class Kernel {
       depth,
       parent,
       spawnedBy,
+      caller,
       attempt: resume?.attempt ?? 1,
     };
     return { run, op, chain, raw: input, logs: resume?.logs, skip };
@@ -792,6 +795,7 @@ export class Kernel {
       attempt: run.attempt > 1 ? run.attempt : undefined,
       artifact: run.parent ? undefined : this.artifact(),
       origin,
+      caller: run.parent ? undefined : run.caller,
       spawnedBy: run.spawnedBy,
       skipDecorators: run.spawnedBy === undefined ? undefined : [...(skip ?? [])],
     };
@@ -837,6 +841,7 @@ export class Kernel {
       runId,
       attempt,
       callerPackage: parent && packageOf(parent.run.operation),
+      caller: run.caller,
       ...calls((name, input) => this.callChild(live, name, input, op)),
       spawn: ((name, input) => this.spawnTree(live, name, input, packageOf(op.name), op)) as Spawn,
       signal,
@@ -847,6 +852,7 @@ export class Kernel {
     const decoratorCtx = (dec: DecoratorDef): DecoratorCtx => ({
       runId,
       attempt,
+      caller: run.caller,
       ...calls((name, input) => this.callChild(live, name, input)),
       spawn: ((name, input) => this.spawnTree(live, name, input, packageOf(dec.id))) as Spawn,
       signal,

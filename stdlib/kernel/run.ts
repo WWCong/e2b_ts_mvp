@@ -31,6 +31,12 @@ export type Ctx = {
   /** 调用方所在的包：父 Run 的 Operation 的包名；根 Run（外部发起的、spawn 起的）没有。按调用方分开数据的（如 kv）据它分 */
   callerPackage?: string;
   /**
+   * 调用者：发起这棵树的请求是谁的（服务接口从它带的 JWT 认出的 id，见 stdlib/infra/callers.ts）。
+   * 树里的 Run、它 spawn 的树都是这一个；外部没说是谁、宿主直接 submit 的没有。
+   * 按调用者分开数据的据它分；调外部服务的基建据它取调用者的令牌
+   */
+  caller?: string;
+  /**
    * 发起这个 Run 的子调用并等它返回；拒绝作为结果返回（5.3）。
    * 名字在注册表里时入参与结果带类型；名字是变量（如模型挑的工具）时照常调用（ops.ts）
    */
@@ -83,6 +89,8 @@ export type Run = {
   readonly parent?: string;
   /** 经 spawn 起的树的根才有：发起它的 Run 的 runId */
   readonly spawnedBy?: string;
+  /** 调用者（同 ctx.caller），整棵树一样 */
+  readonly caller?: string;
   /** 第几次执行，同 ctx.attempt */
   readonly attempt: number;
   // 后续按需加入（附 A）：operations（能力面）、context、limits

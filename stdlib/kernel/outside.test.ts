@@ -198,3 +198,58 @@ describe("对外的契约", () => {
     expect(await kernel.reap(kernel.submit("demo_strip", null))).toEqual({ ok: true, value: { a: 1 } });
   });
 });
+
+describe("调用者", () => {
+  /** demo_who 记下实现、装饰器、子 Run 与它 spawn 的树看到的调用者，再 park 等外部的值 */
+  async function assemble(journalDir: string) {
+    const kernel = new Kernel({ journalDir, defaultDecorators: ["spy_see"] });
+    const seen: [string, string | undefined][] = [];
+    kernel.registerDecorator({
+      id: "spy_see",
+      onError: "closed",
+      fn: (ctx, run, next) => {
+        seen.push([`decorator on ${run.operation}`, ctx.caller]);
+        return next();
+      },
+    });
+    kernel.use("demo", {
+      operations: {
+        who: op({
+          api: true,
+          usage: "是谁",
+          input: z.object({}),
+          output: z.string(),
+          impl: async (ctx) => {
+            seen.push(["demo_who", ctx.caller]);
+            await ctx.call("demo_child", null);
+            await ctx.spawn("demo_child", null);
+            return ctx.park({ schema: z.toJSONSchema(z.string()), payload: "?" });
+          },
+        }),
+        child: op({ input: z.null(), impl: async (ctx) => void seen.push(["demo_child", ctx.caller]) }),
+      },
+    });
+    await kernel.boot();
+    return { kernel, seen };
+  }
+
+  test("submit 时给的调用者，整棵树都看得到：实现、装饰器、子 Run、spawn 起的树；记进根的 run.started 与日志，重启后还在", async () => {
+    const one = await assemble(dir);
+    const runId = one.kernel.outside("web").submit("demo_who", {}, "alice");
+    while (one.kernel.parks().length === 0) await Bun.sleep(1);
+    await Bun.sleep(5);
+    expect(new Set(one.seen.map(([, caller]) => caller))).toEqual(new Set(["alice"]));
+    expect(one.seen.map(([who]) => who)).toEqual(expect.arrayContaining(["demo_who", "demo_child", "decorator on demo_who", "decorator on demo_child"]));
+    expect(JSON.parse((await readFile(join(dir, `${runId}.jsonl`), "utf8")).split("\n")[0]!)).toMatchObject({ type: "root", caller: "alice" });
+    await one.kernel.stop(100);
+
+    const two = await assemble(dir);
+    while (two.kernel.parks().length === 0) await Bun.sleep(1);
+    expect(two.seen).toEqual([
+      ["decorator on demo_who", "alice"],
+      ["demo_who", "alice"],
+    ]);
+    two.kernel.unpark(runId, "好");
+    expect(await two.kernel.reap(runId)).toEqual({ ok: true, value: "好" });
+  });
+});

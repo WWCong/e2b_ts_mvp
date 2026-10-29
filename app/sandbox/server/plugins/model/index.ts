@@ -1,6 +1,6 @@
 /**
  * model 插件（沙盒应用的）：只有 model_complete，调一次模型。经注入的基建 llm（模型后端）调：
- * 用哪家、哪个模型、凭据都在装配配置里，这里只管拼请求、处理工具。消息格式用 pi-ai 的。
+ * 用哪家、哪个模型在装配配置里，凭据是这棵树的调用者的（把 ctx.caller 交给 llm），这里只管拼请求、处理工具。消息格式用 pi-ai 的。
  * 与 MVP 的不同：不做语义压缩，历史怎么管由调用方决定。
  * 公开（script 包能调，如 agent），不交给模型当工具（8.1：工具不含 model 包自身）。
  */
@@ -31,7 +31,7 @@ export default plugin({ needs: ["llm"] }, (_config, { llm }) => ({
       impl: async (ctx, input) => {
         const reply = await llm.complete(
           { systemPrompt: input.systemPrompt, messages: input.messages, tools: input.tools.map(toTool) },
-          { signal: ctx.signal },
+          { signal: ctx.signal, caller: ctx.caller },
         );
         if (reply.stopReason === "error" || reply.stopReason === "aborted") throw new Error(reply.errorMessage ?? reply.stopReason);
 

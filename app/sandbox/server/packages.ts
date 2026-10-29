@@ -3,16 +3,16 @@
  * 只用 import type，运行时什么也不加载。
  */
 
-import type admin from "./scripts/admin";
 import type agent from "./scripts/agent";
 import type fs from "./plugins/fs";
 import type model from "./plugins/model";
+import type manager from "./scripts/manager";
 
 declare module "stdlib" {
   interface Packages {
-    admin: typeof admin;
     agent: typeof agent;
     fs: typeof fs;
+    manager: typeof manager;
     model: typeof model;
   }
 }

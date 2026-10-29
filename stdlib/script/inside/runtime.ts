@@ -93,15 +93,16 @@ const harness = {
 
   /**
    * 执行包里的 Operation key；key 为 null 时执行默认导出的函数（一段源码）。
-   * request 是 { input, runId, attempt, callerPackage }，兑现为 JSON 的 { value }
+   * request 是 { input, runId, attempt, callerPackage, caller }，兑现为 JSON 的 { value }
    */
   async run(key: string | null, request: Uint8Array): Promise<string> {
-    const { input, runId, attempt, callerPackage } = fromHost(request);
+    const { input, runId, attempt, callerPackage, caller } = fromHost(request);
     const host = async (request: { name: string; input: unknown; spawn?: true }) => fromHost(await __host_call(JSON.stringify(request)));
     const ctx = {
       runId,
       attempt,
       callerPackage,
+      caller,
       ...calls((name, input) => host({ name, input })),
       spawn: (name: string, input: unknown) => host({ name, input, spawn: true }),
       tools: () => JSON.parse(__host_tools()),

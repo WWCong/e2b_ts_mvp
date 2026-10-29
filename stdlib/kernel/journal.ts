@@ -16,7 +16,7 @@ import { reject, type Result } from "./run";
  */
 export type Entry =
   /**
-   * 第一行：树的根与外部给的入参；artifact 是当时装配的产物摘要，恢复时比对；origin 是谁发起的。
+   * 第一行：树的根与外部给的入参；artifact 是当时装配的产物摘要，恢复时比对；origin 是谁发起的，caller 是调用者。
    * spawn 起的树还有：发起它的 Run 与那是它的第几步（spawnedBy、step）、根的深度、不装载哪些包的装饰器
    */
   | {
@@ -26,6 +26,7 @@ export type Entry =
       input: unknown;
       artifact: string;
       origin?: string;
+      caller?: string;
       spawnedBy?: string;
       step?: number;
       depth?: number;
@@ -140,9 +141,9 @@ export class Journal {
         const { runId, operation, input } = event;
         if (event.attempt) return this.append(place.root, { type: "retry", runId, attempt: event.attempt });
         if (event.parent === undefined) {
-          const { artifact, origin, spawnedBy, step, depth, skipDecorators } = event;
+          const { artifact, origin, caller, spawnedBy, step, depth, skipDecorators } = event;
           const spawn = spawnedBy === undefined ? {} : { spawnedBy, step, depth, skipDecorators };
-          return this.append(runId, { type: "root", runId, operation, input, artifact: artifact!, origin, ...spawn });
+          return this.append(runId, { type: "root", runId, operation, input, artifact: artifact!, origin, caller, ...spawn });
         }
         return this.append(place.root, {
           type: "call",

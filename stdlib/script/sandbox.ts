@@ -255,7 +255,7 @@ async function execute(pkg: string, code: string, key: string | null, input: unk
 
   slice(LOAD_MS, () => vm.evalCode(code, `${pkg}.js`).dispose());
   slice(sliceMs, () => {
-    const request = { input, runId: ctx.runId, attempt: ctx.attempt, callerPackage: ctx.callerPackage };
+    const request = { input, runId: ctx.runId, attempt: ctx.attempt, callerPackage: ctx.callerPackage, caller: ctx.caller };
     toGuest(request).consume((bytes) => vm.setProp(vm.global, "__request", bytes));
     const promise = vm.evalCode(`__harness.run(${JSON.stringify(key)}, __request)`);
     void vm.resolvePromise(promise).then((outcome) => {

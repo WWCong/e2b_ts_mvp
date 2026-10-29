@@ -1,7 +1,8 @@
 /**
  * 客户端这一侧的 HTTP 客户端：经服务接口（服务端见 stdlib/serve/http.ts）用 Harness，各个应用的客户端共用。
  * 它在 Harness 外面，只能做服务接口允许的事：调 expose 里的 Operation、取结果、回答问题、看事件。
- * 连本地的 Unix socket，或一个 URL（TCP）。
+ * 连本地的 Unix socket，或一个 URL（TCP）；后者可带调用者的令牌（JWT，authorization: Bearer），
+ * 经网关时网关会带上，直连时（如本机开发）由客户端自己带。
  * client 是自报的名字，记进它发起的树的 origin（http:名字），重连后据它认出自己上次发起的树。
  */
 
@@ -34,13 +35,14 @@ export type Client = {
   events(onEvent: (event: HarnessEvent) => void, signal?: AbortSignal): Promise<{ closed: Promise<void> }>;
 };
 
-/** 连哪个服务接口：本地的 Unix socket，或 URL（如 http://127.0.0.1:8081） */
-export type Target = { socket: string } | { url: string };
+/** 连哪个服务接口：本地的 Unix socket，或 URL（如 http://127.0.0.1:8080）；token 是调用者的令牌 */
+export type Target = { socket: string } | { url: string; token?: string };
 
-/** 一次请求：Target 决定连哪 */
-function send(target: Target, path: string, init: RequestInit = {}): Promise<Response> {
+/** 一次请求：Target 决定连哪、带不带令牌 */
+function send(target: Target, path: string, init: RequestInit & { headers?: Record<string, string> } = {}): Promise<Response> {
   if ("socket" in target) return fetch(`http://harness${path}`, { ...init, unix: target.socket });
-  return fetch(`${target.url.replace(/\/$/, "")}${path}`, init);
+  const headers = target.token ? { ...init.headers, authorization: `Bearer ${target.token}` } : init.headers;
+  return fetch(`${target.url.replace(/\/$/, "")}${path}`, { ...init, headers });
 }
 
 /** 连 HTTP 服务接口 */
