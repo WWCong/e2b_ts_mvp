@@ -1,0 +1,5 @@
+{
+  // 每个应用一份：它的装配类型（server/packages.ts）只在自己的编译里生效，stdlib 与别的应用看不到
+  "extends": "../../tsconfig.json",
+  "include": ["."]
+}

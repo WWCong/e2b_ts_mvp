@@ -6,8 +6,10 @@
     "start": "bun app/mvp/start.ts",
     "serve": "bun app/mvp/server/main.ts",
     "chat": "bun app/mvp/client/main.ts",
+    "sandbox:serve": "bun app/sandbox/server/main.ts",
+    "sandbox:admin": "bun app/sandbox/client/main.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p app/mvp"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p app/mvp && tsc --noEmit -p app/sandbox"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",
