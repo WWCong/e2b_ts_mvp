@@ -1,5 +1,5 @@
 /**
- * 分层的约束：app 里的插件只经注入的基建做 IO（stdlib/infra）——不直接 import 文件、网络、子进程，
+ * 分层的约束：插件只经注入的基建做 IO（stdlib/infra）——不直接 import 文件、网络、子进程，
  * 不在运行时用模型 SDK（import type 可以，消息格式用它的），不读环境变量、不直接 fetch。
  * 插件与内核在同一个进程里，挡不住 import，所以在测试里查。
  * 例外：pi-tools（pi 的编码工具）照常 import，它的文件操作换成了我们注入的（fs 插件的 operations.ts）。
@@ -37,8 +37,8 @@ describe("分层", () => {
     expect(violations('import { posix } from "node:path";\nimport { op } from "stdlib";')).toEqual([]);
   });
 
-  test("app 的插件不直接做 IO，只用注入的基建", async () => {
-    const dir = join(import.meta.dir, "plugins");
+  test("插件不直接做 IO，只用注入的基建", async () => {
+    const dir = import.meta.dir;
     const report: string[] = [];
     for await (const path of new Bun.Glob("**/*.ts").scan(dir)) {
       if (path.endsWith(".test.ts")) continue;

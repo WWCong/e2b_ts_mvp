@@ -65,9 +65,28 @@ describe("HTTP 客户端", () => {
     await closed;
   });
 
-  test("reachable：socket 上有没有活着的服务", async () => {
+  test("reachable：那里有没有活着的服务", async () => {
     const { socket } = await setup();
-    expect(await reachable(socket)).toBe(true);
-    expect(await reachable(`${socket}.nope`)).toBe(false);
+    expect(await reachable({ socket })).toBe(true);
+    expect(await reachable({ socket: `${socket}.nope` })).toBe(false);
+  });
+
+  test("经 URL 连 TCP 上的服务接口，带上令牌", async () => {
+    const kernel = new Kernel();
+    kernel.use("demo", {
+      operations: { echo: op({ api: true, usage: "回显", input: z.object({ text: z.string() }), output: z.string(), impl: async (_c, { text }) => text }) },
+    });
+    const probe = Bun.serve({ port: 0, fetch: () => new Response() });
+    const port = probe.port!;
+    probe.stop(true);
+    const service = await httpService({ port, token: "s3cret", expose: ["demo_echo"] });
+    services.push(service);
+    await kernel.boot();
+    service.listen({ outside: (origin) => kernel.outside(origin), subscribe: (fn) => kernel.events.subscribe(fn) });
+    const url = `http://127.0.0.1:${port}/`;
+
+    expect(await httpClient({ url, token: "s3cret", name: "t" }).call("demo_echo", { text: "hi" })).toMatchObject({ result: { ok: true, value: "hi" } });
+    expect(httpClient({ url, token: "nope", name: "t" }).call("demo_echo", { text: "hi" })).rejects.toThrow("unauthorized");
+    expect(await reachable({ url })).toBe(true);
   });
 });

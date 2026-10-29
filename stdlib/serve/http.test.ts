@@ -164,6 +164,28 @@ describe("HTTP 服务接口", () => {
     await reader.cancel();
   });
 
+  test("令牌：配了就每个请求都要带 Bearer 令牌，没带或不对是 401；TCP 绑到本机以外不配令牌启动即失败", async () => {
+    const kernel = new Kernel();
+    kernel.use("demo", {
+      operations: { echo: op({ api: true, usage: "回显", input: z.object({ text: z.string() }), output: z.string(), impl: async (_ctx, { text }) => text }) },
+    });
+    // 先借一个空闲端口
+    const probe = Bun.serve({ port: 0, fetch: () => new Response() });
+    const port = probe.port!;
+    probe.stop(true);
+    const service = await httpService({ port, token: "s3cret", expose: ["demo_echo"] });
+    services.push(service);
+    await kernel.boot();
+    service.listen({ outside: (origin) => kernel.outside(origin), subscribe: (fn) => kernel.events.subscribe(fn) });
+    const call = (authorization?: string) =>
+      fetch(`${service.address}/operations/demo_echo`, { method: "POST", body: '{"text":"hi"}', headers: authorization ? { authorization } : {} });
+
+    expect((await call()).status).toBe(401);
+    expect(await (await call("Bearer nope")).json()).toEqual({ error: "unauthorized" });
+    expect(await (await call("Bearer s3cret")).json()).toMatchObject({ result: { ok: true, value: "hi" } });
+    expect(httpService({ port: 0, hostname: "0.0.0.0", expose: [] })).rejects.toThrow("serve.http on 0.0.0.0 needs a token");
+  });
+
   test("socket 已有活着的服务：报错，不去动它；上次留下的死 socket 文件删掉再监听；关停完删掉 socket 文件", async () => {
     const { socket, service } = await setup();
     expect(httpService({ socket, expose: [] })).rejects.toThrow(`a harness is already serving on ${socket}`);

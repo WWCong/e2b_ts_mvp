@@ -9,8 +9,8 @@
 
 import { socket } from "../paths";
 import { brief } from "./brief";
-import { runConsole } from "./console";
-import { httpClient, reachable } from "./http";
+import { runConsole } from "client/console";
+import { httpClient, reachable } from "client/http";
 
 /** 开一个终端客户端，退出时返回；signal 让它退出 */
 export function chat(options: { first?: string; signal?: AbortSignal } = {}) {
@@ -26,7 +26,7 @@ export function chat(options: { first?: string; signal?: AbortSignal } = {}) {
 }
 
 if (import.meta.main) {
-  if (!(await reachable(socket))) {
+  if (!(await reachable({ socket }))) {
     console.error(`连不上 Harness（${socket}）：先 bun run serve，或用 bun start 一起起`);
     process.exit(1);
   }

@@ -7,8 +7,9 @@
  *   如 "stdlib/plugins/time"。Kernel、loadPlugin、loadScript 给测试与自己搭宿主用
  * kernel 下的其他模块（日志、回放等）是内部实现，不从这里导出：对外接口只交给 stdlib 里的服务接口（stdlib/serve），
  * app 的插件用 api 声明自己的哪些 Operation 能对外，装配的 serve.expose 决定实际对外哪些。
- * 客户端（UI、别的系统）不在 stdlib 里：它们在 Harness 外面，归各个应用（如 app/mvp/client），
- * 经服务接口用 Harness；服务接口的协议用到的类型（RunInfo、ParkInfo、ApiInfo、事件、结果）从这里导出。
+ * 客户端（UI、别的系统）不在 stdlib 里：它们在 Harness 外面，归各个应用（如 app/mvp/client），经服务接口用 Harness；
+ * 各应用共用的 HTTP 客户端与终端界面在 client/（与 stdlib 平级，不属于 Harness）。
+ * 服务接口的协议用到的类型（RunInfo、ParkInfo、ApiInfo、事件、结果）从这里导出。
  */
 
 export { decorator, op, opaque, plugin, script, type OpDecl, type PluginObject, type ScriptObject } from "./kernel/plugin";

@@ -8,12 +8,12 @@ import { inSurface } from "./surface";
 describe("inSurface", () => {
   test("都不写即全开；项可以是 Operation 名或包名；先 only 再 exclude", () => {
     const check = (surface: Surface, targets: string[]) => targets.map((t) => inSurface(surface, t));
-    const targets = ["fs_read", "fs_delete", "web_search", "web_fetch"];
+    const targets = ["docs_read", "docs_delete", "web_search", "web_fetch"];
 
     expect(check({}, targets)).toEqual([true, true, true, true]);
-    expect(check({ only: ["fs"] }, targets)).toEqual([true, true, false, false]);
+    expect(check({ only: ["docs"] }, targets)).toEqual([true, true, false, false]);
     expect(check({ exclude: ["web"] }, targets)).toEqual([true, true, false, false]);
-    expect(check({ only: ["fs", "web_search"], exclude: ["fs_delete"] }, targets)).toEqual([true, false, true, false]);
+    expect(check({ only: ["docs", "web_search"], exclude: ["docs_delete"] }, targets)).toEqual([true, false, true, false]);
   });
 });
 
@@ -22,7 +22,7 @@ describe("能力面检查", () => {
     const kernel = new Kernel();
     const events: HarnessEvent[] = [];
     kernel.events.subscribe((e) => events.push(e));
-    kernel.register({ name: "fs_read", input: z.null(), impl: async () => "content" });
+    kernel.register({ name: "docs_read", input: z.null(), impl: async () => "content" });
     kernel.register({ name: "web_search", input: z.null(), impl: async () => "results" });
     await kernel.boot();
     const run = (name: string) => kernel.reap(kernel.submit(name, null));
@@ -34,13 +34,13 @@ describe("能力面检查", () => {
     kernel.register({
       name: "demo_reader",
       input: z.null(),
-      only: ["fs"],
-      impl: (ctx) => Promise.all([ctx.call("fs_read", null), ctx.call("web_search", null)]),
+      only: ["docs"],
+      impl: (ctx) => Promise.all([ctx.call("docs_read", null), ctx.call("web_search", null)]),
     });
 
     const rejected = { ok: false, by: "kernel", reason: "web_search is not in the surface of demo_reader", retryable: false };
     expect(await run("demo_reader")).toEqual({ ok: true, value: [{ ok: true, value: "content" }, rejected] });
-    expect(events.filter((e) => e.type === "run.started").map((e) => e.operation)).toEqual(["demo_reader", "fs_read"]);
+    expect(events.filter((e) => e.type === "run.started").map((e) => e.operation)).toEqual(["demo_reader", "docs_read"]);
     expect(events).toContainEqual(expect.objectContaining({ type: "call.rejected", target: "web_search", result: rejected }));
   });
 
@@ -64,7 +64,7 @@ describe("能力面检查", () => {
         return next();
       },
     });
-    kernel.register({ name: "demo_reader", input: z.null(), only: ["fs"], decorators: ["demo_peek"], impl: async () => "done" });
+    kernel.register({ name: "demo_reader", input: z.null(), only: ["docs"], decorators: ["demo_peek"], impl: async () => "done" });
 
     expect(await run("demo_reader")).toEqual({ ok: true, value: "done" });
     expect(seen).toEqual({ ok: true, value: "results" });

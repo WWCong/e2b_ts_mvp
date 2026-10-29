@@ -4,8 +4,8 @@
  * harness_park 的入参只看 payload（要问的问题）；harness_exec 的入参只看脚本有几行。只影响显示；返回 undefined 用缺省的截断 JSON
  */
 
-import type { Brief } from "./console";
-import { short } from "./console/tree";
+import type { Brief } from "client/console";
+import { short } from "client/console/tree";
 
 export const brief: Brief = (operation, side, value) => {
   switch (`${operation} ${side}`) {

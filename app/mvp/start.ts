@@ -8,7 +8,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 import { chat } from "./client/main";
-import { reachable } from "./client/http";
+import { reachable } from "client/http";
 import { socket } from "./paths";
 
 const quit = new AbortController();
@@ -24,12 +24,12 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
 }
 
 let exited: Promise<unknown> = Promise.resolve();
-if (!(await reachable(socket))) {
+if (!(await reachable({ socket }))) {
   server = spawn(process.execPath, [join(import.meta.dir, "server", "main.ts")], { stdio: ["ignore", "ignore", "inherit"], detached: true });
   const child = server;
   exited = new Promise((resolve) => child.once("exit", resolve));
   // 等它开始服务；起不来就退出（原因它自己打在标准错误上）
-  while (!(await reachable(socket))) {
+  while (!(await reachable({ socket }))) {
     if (child.exitCode !== null) process.exit(1);
     await Bun.sleep(20);
   }
