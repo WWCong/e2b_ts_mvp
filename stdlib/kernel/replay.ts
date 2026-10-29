@@ -8,9 +8,9 @@
 import type { Recorded, RunLog } from "./journal";
 import type { Result } from "./run";
 
-/** 已完成的记录：调用有了结果，或 park 已关闭。代码看过它的结果 */
+/** 已完成的记录：调用有了结果，spawn（发起即完成），或 park 已关闭。代码看过它的结果 */
 export function isDone(recorded: Recorded): boolean {
-  return recorded.type === "park" || recorded.result !== undefined;
+  return recorded.type !== "call" || recorded.result !== undefined;
 }
 
 export class Replay {

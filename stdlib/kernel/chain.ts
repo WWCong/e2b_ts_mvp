@@ -33,9 +33,9 @@ export type Decorator = (ctx: DecoratorCtx, run: Run, next: () => Promise<Result
 
 export type DecoratorDef = { id: string; onError: OnError; fn: Decorator };
 
-/** 依次穿过 chain，走到最内层时冻结配置、执行实现 */
+/** 依次穿过 chain，走到最内层时冻结配置、执行实现。ctxOf 给每个装饰器各自的 ctx：它 spawn 的树不装载它这个包的装饰器 */
 export function runChain(
-  ctx: DecoratorCtx,
+  ctxOf: (dec: DecoratorDef) => DecoratorCtx,
   run: Run,
   chain: readonly DecoratorDef[],
   impl: () => Promise<Result>,
@@ -47,7 +47,7 @@ export function runChain(
       freeze(run);
       return impl();
     }
-    return link(ctx, run, dec, () => through(i + 1), events);
+    return link(ctxOf(dec), run, dec, () => through(i + 1), events);
   };
   return through(0);
 }

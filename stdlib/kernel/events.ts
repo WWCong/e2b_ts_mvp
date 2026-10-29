@@ -18,8 +18,9 @@ export type Replayed = { runId: string; seq: number } & Recorded;
 export type EventBody =
   /**
    * input：调用方给的入参，原样（实现拿到的是按 schema 解析后的）；chain：这个 Run 的装饰器链序，从外到内；
-   * step：它是父的第几步，即日志的序号（根 Run 没有）；attempt：崩溃恢复后重新执行时才有，第几次执行；
-   * artifact：根 Run 才有，装配的产物摘要；origin：根 Run 才有，这棵树是谁发起的（服务接口给的，如 http:console），宿主直接 submit 的没有
+   * step：它是父的第几步，即日志的序号（外部发起的根 Run 没有；spawn 起的根是发起方的第几步）；attempt：崩溃恢复后重新执行时才有，第几次执行；
+   * artifact：根 Run 才有，装配的产物摘要；origin：根 Run 才有，这棵树是谁发起的（服务接口给的，如 http:console），宿主直接 submit 的没有；
+   * spawnedBy：spawn 起的根才有，发起它的 Run；skipDecorators：spawn 起的根才有，这棵树上不装载哪些包的装饰器
    */
   | {
       type: "run.started";
@@ -33,12 +34,22 @@ export type EventBody =
       attempt?: number;
       artifact?: string;
       origin?: string;
+      spawnedBy?: string;
+      skipDecorators?: string[];
     }
   | { type: "run.exited"; runId: string; operation: string; result: Result }
   /** 被杀（自己或祖先被取消，或关停，或恢复失败）；之后这个 Run 不再有 run.exited。reason：cancelled、shutdown、diverged …，或根建不起来的原因 */
   | { type: "run.killed"; runId: string; operation: string; reason: string }
-  /** 内核在建子 Run 之前就拒绝了这次调用（目标不存在、不在能力面、超出保险丝、入参不符等）；runId 是发起方，step 是它的第几步 */
-  | { type: "call.rejected"; runId: string; step: number; target: string; input: unknown; result: Rejected }
+  /**
+   * runId 经 spawn 另起了一棵树，根是 child；step 是这是 runId 的第几步。紧跟在新树根的 run.started 之后，
+   * 恢复时接回崩溃前已起好的那棵树（还没来得及记这一步）也发
+   */
+  | { type: "run.spawned"; runId: string; step: number; target: string; input: unknown; child: string }
+  /**
+   * 内核在建子 Run 之前就拒绝了这次调用（目标不存在、不在能力面、超出保险丝、入参不符等）；runId 是发起方，step 是它的第几步。
+   * spawn 被拒也是它，带 spawn
+   */
+  | { type: "call.rejected"; runId: string; step: number; target: string; input: unknown; result: Rejected; spawn?: true }
   /** Run 经 ctx.park 开始等待；runId 即 unpark 用的 id。payload 内核不解释，由 UI 等外部按约定格式理解（3.5） */
   | { type: "park.opened"; runId: string; schema: Record<string, unknown>; payload: unknown }
   /** 不再等待：unpark 送来了值、被撤回，或 Run 被取消；关停不算（见 Kernel.stop）。step 是这个 Run 的第几步，result 是 park 这次的产出 */

@@ -87,6 +87,32 @@ describe("harness_exec", () => {
     expect(await exec(source)).toEqual({ ok: true, value: [100, "more than 100 calls"] });
   });
 
+  test("ctx.spawn 另起一棵树，不等它：拿到 runId；只能 spawn 公开的；与调用一起算次数", async () => {
+    const { exec, events, doubled } = await setup();
+    const source = `
+      export default async (ctx) => {
+        const a = await ctx.spawn("demo_double", 3);
+        const b = await ctx.spawn("demo_secret", null);
+        let n = 2;
+        try { for (;;) { await ctx.call("demo_double", 1); n++; } } catch (err) { return [a, b.reason, n, err.message]; }
+      };`;
+
+    const result = await exec(source);
+    expect(result).toEqual({
+      ok: true,
+      value: [{ ok: true, value: expect.any(String) }, "demo_secret is not public: harness_exec is a script", 100, "more than 100 calls"],
+    });
+    const child = ((result as { value: [{ value: string }] }).value[0]).value;
+    const spawner = events.find((e) => e.type === "run.started" && e.operation === "harness_exec")!;
+    expect(events.find((e) => e.type === "run.started" && e.runId === child)).toMatchObject({
+      operation: "demo_double",
+      parent: undefined,
+      spawnedBy: spawner.runId,
+      skipDecorators: ["harness"],
+    });
+    expect(doubled[0]).toBe(3);
+  });
+
   test("等人时停下：重启后源码重新跑，已完成的调用回放、不再执行，接着等原来的问题；回放期间的日志不再发", async () => {
     const journal = await mkdtemp(join(tmpdir(), "exec-"));
     const source = `

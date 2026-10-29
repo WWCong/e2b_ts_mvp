@@ -47,6 +47,9 @@ export type Call = <N extends string>(
   input: [DeclOf<N>] extends [never] ? unknown : InputOf<DeclOf<N>>,
 ) => Promise<Result<[DeclOf<N>] extends [never] ? unknown : OutputOf<DeclOf<N>>>>;
 
+/** ctx.spawn：入参的类型与 ctx.call 一样按注册表检查；结果是新树根的 runId */
+export type Spawn = <N extends string>(name: N, input: [DeclOf<N>] extends [never] ? unknown : InputOf<DeclOf<N>>) => Promise<Result<string>>;
+
 /** ctx.ops：ctx.ops.fs.read(input) 即 ctx.call("fs_read", input)，包与 Operation 都须在注册表里 */
 export type Ops = {
   readonly [P in Pkg]: {

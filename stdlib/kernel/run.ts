@@ -3,7 +3,7 @@
  */
 
 import type { LogLevel } from "./events";
-import type { Call, Ops } from "./ops";
+import type { Call, Ops, Spawn } from "./ops";
 
 /** waiting：在等子 Run 或等 unpark（ctx.park）；killed：被杀（取消或关停） */
 export type RunStatus = "init" | "running" | "waiting" | "exited" | "killed";
@@ -21,14 +21,14 @@ export type ToolSpec = { name: string; description: string; inputSchema: Record<
  * 内核交给实现与装饰器的句柄，绑定在一个 Run 上。
  * 要落日志、要恢复的东西都经 Operation 取：调用结果记进日志，恢复重放时回送。
  * 时间这类不确定的值也一样（time_now），状态将来是 state 插件的 Operation，内核不另设接口。
- * 后续加入：spawn、emit（自定义的观测事件），以及 depth 等只读信息。
+ * 后续加入：emit（自定义的观测事件），以及 depth 等只读信息。
  */
 export type Ctx = {
   /** 这个 Run 的 runId。崩溃恢复后重新执行时不变，可当幂等键交给外部系统（如邮件的 Message-ID） */
   runId: string;
   /** 第几次执行：平时是 1；崩溃时正在执行、恢复后重新执行的加一。大于 1 时之前的执行可能已生效一部分 */
   attempt: number;
-  /** 调用方所在的包：父 Run 的 Operation 的包名；外部发起的根 Run 没有。按调用方分开数据的（如 kv）据它分 */
+  /** 调用方所在的包：父 Run 的 Operation 的包名；根 Run（外部发起的、spawn 起的）没有。按调用方分开数据的（如 kv）据它分 */
   callerPackage?: string;
   /**
    * 发起这个 Run 的子调用并等它返回；拒绝作为结果返回（5.3）。
@@ -37,6 +37,13 @@ export type Ctx = {
   call: Call;
   /** 写死的调用：ctx.ops.fs.read(input) 即 ctx.call("fs_read", input)，包与 Operation 不在注册表里编译即报错 */
   ops: Ops;
+  /**
+   * 另起一棵 Run 树做这件事，不等它（5.3）：返回新树根的 runId，被拒（与 call 同样的检查）以拒绝返回。
+   * 新树没有父，结果没人取、结束即丢，只在事件里留下；深度接着这个 Run 往下数，保险丝照样管。
+   * 发起它的包（实现的、或装饰器的包）的装饰器不包这棵树上的调用，免得自己发起的树又触发自己；从这棵树里再 spawn 的也一样。
+   * 这次 spawn 记在这个 Run 名下：恢复时重新执行到这一步不再发起，拿回原来的 runId
+   */
+  spawn: Spawn;
   /**
    * Run 被杀（取消或关停）时 abort。传给 fetch、子进程等支持它的 API，IO 当场中止。
    * 在解释器里跑的 script 包没有它：不做 IO，被杀时解释器直接丢掉
@@ -74,9 +81,11 @@ export type Run = {
   readonly depth: number;
   /** 父 Run 的 runId；根 Run 没有 */
   readonly parent?: string;
+  /** 经 spawn 起的树的根才有：发起它的 Run 的 runId */
+  readonly spawnedBy?: string;
   /** 第几次执行，同 ctx.attempt */
   readonly attempt: number;
-  // 后续按需加入（附 A）：spawnedBy、operations（能力面）、context、limits
+  // 后续按需加入（附 A）：operations（能力面）、context、limits
 };
 
 /** 合法转换。init → running 即进入装饰器链 */

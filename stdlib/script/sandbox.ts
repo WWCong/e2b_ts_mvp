@@ -6,7 +6,7 @@
  * - 一段源码（runSource，harness_exec 用）：打包，与包的 Operation 一样在全新的解释器里执行它的默认导出
  * - 包草稿（runDraft，harness_exec 用）：与装载一样打包、读出声明，在调用方的 Run 里执行其中一个 Operation
  * - 每个 Run：从底子恢复出一个全新的 WASM 实例（内存与别的 Run 不共享），求值包的代码，执行；结束或被杀即丢掉。
- *   实现发起的调用经 ctx.call 交给内核，记在这个 Run 名下，照常查能力面与公开表、记日志、恢复时回放
+ *   实现发起的调用与 spawn 经 ctx 交给内核，记在这个 Run 名下，照常查能力面与公开表、记日志、恢复时回放
  * 限额：内存上限；一段同步执行（两次等待之间）超时即中断，这个 Run 以失败结束。
  * 宿主交给解释器的 JSON 按 UTF-8 字节传，在解释器里解码（encoding 扩展的 TextDecoder）：
  * quickjs-wasi 的 newString 对大字符串很慢（逐字查孤立代理项，5 MB 约 0.3 秒），历史里带图片时一次就是几 MB。
@@ -32,7 +32,7 @@ const SLICE_MS = 1000;
 const LOAD_MS = 1000;
 const encoder = new TextEncoder();
 
-/** sliceMs：一段同步执行的上限；maxCalls：一次执行最多发起多少个调用，缺省不限 */
+/** sliceMs：一段同步执行的上限；maxCalls：一次执行最多发起多少个调用（spawn 也算），缺省不限 */
 export type ScriptLimits = { sliceMs?: number; maxCalls?: number };
 /** 宿主函数的名字：建底子时占好，恢复后接上 */
 const HOST = ["__host_call", "__host_tools", "__host_log"] as const;
@@ -233,9 +233,9 @@ async function execute(pkg: string, code: string, key: string | null, input: unk
   let calls = 0;
   vm.registerHostCallback("__host_call", (request) => {
     if (++calls > maxCalls) throw new Error(`more than ${maxCalls} calls`);
-    const { name, input } = JSON.parse(request.toString()) as { name: string; input: unknown };
+    const { name, input, spawn } = JSON.parse(request.toString()) as { name: string; input: unknown; spawn?: true };
     const deferred = vm.newPromise();
-    void ctx.call(name, input).then((result) =>
+    void (spawn ? ctx.spawn(name, input) : ctx.call(name, input)).then((result) =>
       slice(sliceMs, () => {
         toGuest(result).consume((value) => deferred.resolve(value));
         deferred.handle.dispose();

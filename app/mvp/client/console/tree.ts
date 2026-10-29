@@ -12,6 +12,9 @@ export function eventTree(write: (line: string) => void, brief?: Brief): (event:
   /** runId → 深度，用来缩进；Run 结束后移除 */
   const depths = new Map<string, number>();
   const depthOf = (runId: string) => depths.get(runId) ?? 0;
+  /** spawn 起的树的根：它和发起方各跑各的，结束那行常夹在别的 Run 下面，标出来 */
+  const spawned = new Set<string>();
+  const ended = (runId: string) => (spawned.delete(runId) ? "（另起的树）" : "");
   const line = (depth: number, text: string) => write(`${"  ".repeat(depth)}${text}`);
   const summary = (operation: string, side: "input" | "output", value: unknown) => {
     // 带图片的结果：文字照常，图片只写类型，不打出 base64
@@ -26,9 +29,13 @@ export function eventTree(write: (line: string) => void, brief?: Brief): (event:
 
   return (e) => {
     switch (e.type) {
-      case "run.started":
+      case "run.started": {
         depths.set(e.runId, e.depth);
-        return line(e.depth, `▶ ${e.operation} ${summary(e.operation, "input", e.input)}${e.attempt ? `（第 ${e.attempt} 次）` : ""}`);
+        // spawn 起的树：缩进接着发起方，不是它的子调用
+        const [mark, note] = e.spawnedBy ? ["⇢", "（另起一棵树）"] : ["▶", ""];
+        if (e.spawnedBy) spawned.add(e.runId);
+        return line(e.depth, `${mark} ${e.operation} ${summary(e.operation, "input", e.input)}${note}${e.attempt ? `（第 ${e.attempt} 次）` : ""}`);
+      }
       case "tree.recovered": {
         const changed = e.artifactChanged ? "；代码改过，逐步比对" : "";
         return line(0, `↻ 接着做 ${e.operation}：${e.replayed.length} 步已完成、不再执行，${e.inflight.length} 个重新执行${changed}`);
@@ -37,10 +44,11 @@ export function eventTree(write: (line: string) => void, brief?: Brief): (event:
         const depth = depthOf(e.runId);
         depths.delete(e.runId);
         const r = e.result;
-        return line(depth, r.ok ? `✓ ${e.operation} ${summary(e.operation, "output", r.value)}` : `✗ ${e.operation} ${r.by}: ${r.reason}`);
+        const note = ended(e.runId);
+        return line(depth, r.ok ? `✓ ${e.operation} ${summary(e.operation, "output", r.value)}${note}` : `✗ ${e.operation} ${r.by}: ${r.reason}${note}`);
       }
       case "run.killed":
-        line(depthOf(e.runId), `✗ ${e.operation} killed (${e.reason})`);
+        line(depthOf(e.runId), `✗ ${e.operation} killed (${e.reason})${ended(e.runId)}`);
         return void depths.delete(e.runId);
       case "call.rejected":
         return line(depthOf(e.runId) + 1, `✗ ${e.target} ${e.result.by}: ${e.result.reason}`);

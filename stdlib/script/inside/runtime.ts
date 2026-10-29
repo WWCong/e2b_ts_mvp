@@ -2,7 +2,7 @@
  * 解释器里的运行时（7.5）：与 Zod 一起打成解释器的底子（../bundle.ts），求值后存成快照，每个 Run 从快照恢复。
  * - modules：script 包 import 的 stdlib 与 zod（打包时换成取这里的）
  * - declare：读出包的声明交给宿主，入参与出参的 JSON Schema 由包自己的 Zod 生成
- * - run：执行包里的一个 Operation，或一段源码的默认导出（harness_exec）。ctx 的调用经宿主函数 __host_call 交给内核，
+ * - run：执行包里的一个 Operation，或一段源码的默认导出（harness_exec）。ctx 的调用与 spawn 经宿主函数 __host_call 交给内核，
  *   入参与结果以 JSON 往返：宿主交进来的是 UTF-8 字节，这里解码（大字符串按字符串交进来很慢，见 ../sandbox.ts）
  * 解释器里本来就没有文件、网络、定时器与宿主对象。时间与随机数也拿掉了：方案里由内核提供、随调用记录回放（7.5），
  * 还没做，要时间就调 time_now。console 的输出经宿主函数 __host_log 写进这个 Run 的日志（run.logged 事件），不交给调用方。
@@ -97,12 +97,13 @@ const harness = {
    */
   async run(key: string | null, request: Uint8Array): Promise<string> {
     const { input, runId, attempt, callerPackage } = fromHost(request);
-    const call = async (name: string, input: unknown) => fromHost(await __host_call(JSON.stringify({ name, input })));
+    const host = async (request: { name: string; input: unknown; spawn?: true }) => fromHost(await __host_call(JSON.stringify(request)));
     const ctx = {
       runId,
       attempt,
       callerPackage,
-      ...calls(call),
+      ...calls((name, input) => host({ name, input })),
+      spawn: (name: string, input: unknown) => host({ name, input, spawn: true }),
       tools: () => JSON.parse(__host_tools()),
       park: () => Promise.reject(new Error("a script cannot park directly: call an operation")),
     };
