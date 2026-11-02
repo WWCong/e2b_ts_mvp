@@ -203,14 +203,14 @@ describe("HTTP 服务接口", () => {
       const headers: Record<string, string> = sub ? { authorization: `Bearer ${token(sub)}` } : {};
       const request = (method: string, path: string, body?: unknown) =>
         fetch(`http://harness${path}`, { unix: socket, method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
-      return { request, get: async (path: string) => (await (await request("GET", path)).json()) as unknown[] };
+      return { request, get: async (path: string): Promise<unknown> => (await request("GET", path)).json() };
     };
     const [alice, bob, nobody] = [as("alice"), as("bob"), as()];
     // 各自开着事件流，最后看各自收到了什么
     const streams = await Promise.all([alice, bob, nobody].map(async (who) => (await who.request("GET", "/events")).body!.getReader()));
 
     const { runId } = (await (await alice.request("POST", "/operations/demo_ask?async", {})).json()) as { runId: string };
-    while ((await alice.get("/parks")).length === 0) await Bun.sleep(1);
+    while (((await alice.get("/parks")) as ParkInfo[]).length === 0) await Bun.sleep(1);
     expect(await alice.get("/runs")).toEqual([{ runId, operation: "demo_ask", origin: "http", caller: "alice", done: false }]);
     for (const other of [bob, nobody]) {
       expect(await other.get("/runs")).toEqual([]);
