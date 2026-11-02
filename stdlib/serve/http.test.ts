@@ -203,7 +203,7 @@ describe("HTTP 服务接口", () => {
       const headers: Record<string, string> = sub ? { authorization: `Bearer ${token(sub)}` } : {};
       const request = (method: string, path: string, body?: unknown) =>
         fetch(`http://harness${path}`, { unix: socket, method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
-      return { request, get: async (path: string) => (await request("GET", path)).json() };
+      return { request, get: async (path: string) => (await (await request("GET", path)).json()) as unknown[] };
     };
     const [alice, bob, nobody] = [as("alice"), as("bob"), as()];
     // 各自开着事件流，最后看各自收到了什么
