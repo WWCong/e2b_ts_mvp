@@ -203,6 +203,8 @@ describe("调用者", () => {
   /** demo_who 记下实现、装饰器、子 Run 与它 spawn 的树看到的调用者，再 park 等外部的值 */
   async function assemble(journalDir: string) {
     const kernel = new Kernel({ journalDir, defaultDecorators: ["spy_see"] });
+    const events: HarnessEvent[] = [];
+    kernel.events.subscribe((e) => events.push(e));
     const seen: [string, string | undefined][] = [];
     kernel.registerDecorator({
       id: "spy_see",
@@ -230,10 +232,10 @@ describe("调用者", () => {
       },
     });
     await kernel.boot();
-    return { kernel, seen };
+    return { kernel, seen, events };
   }
 
-  test("submit 时给的调用者，整棵树都看得到：实现、装饰器、子 Run、spawn 起的树；记进根的 run.started 与日志，重启后还在", async () => {
+  test("submit 时给的调用者，整棵树都看得到：实现、装饰器、子 Run、spawn 起的树；每条事件都带着，记进日志，重启后还在", async () => {
     const one = await assemble(dir);
     const runId = one.kernel.outside("web").submit("demo_who", {}, "alice");
     while (one.kernel.parks().length === 0) await Bun.sleep(1);
@@ -241,6 +243,8 @@ describe("调用者", () => {
     expect(new Set(one.seen.map(([, caller]) => caller))).toEqual(new Set(["alice"]));
     expect(one.seen.map(([who]) => who)).toEqual(expect.arrayContaining(["demo_who", "demo_child", "decorator on demo_who", "decorator on demo_child"]));
     expect(JSON.parse((await readFile(join(dir, `${runId}.jsonl`), "utf8")).split("\n")[0]!)).toMatchObject({ type: "root", caller: "alice" });
+    expect(new Set(one.events.map((e) => e.type))).toEqual(new Set(["run.started", "run.exited", "run.spawned", "park.opened"]));
+    expect(one.events.every((e) => e.caller === "alice")).toBe(true);
     await one.kernel.stop(100);
 
     const two = await assemble(dir);
@@ -251,5 +255,7 @@ describe("调用者", () => {
     ]);
     two.kernel.unpark(runId, "好");
     expect(await two.kernel.reap(runId)).toEqual({ ok: true, value: "好" });
+    expect(two.events.every((e) => e.caller === "alice")).toBe(true);
+    expect(two.events.map((e) => e.type)).toContain("tree.recovered");
   });
 });

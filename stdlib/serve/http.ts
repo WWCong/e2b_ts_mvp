@@ -2,13 +2,15 @@
  * HTTP 服务接口（装配配置 serve.http）。只提供装配配置 expose 里列出的 Operation（都须声明了 api，宿主启动前查过）。
  * 请求头 harness-client 是调用方自报的名字，记进树的 origin（http:名字），客户端重连后据它认出自己发起的树；
  * 它只是个标签。配了 callers 时，请求带的 authorization: Bearer <令牌>（网关签发的 JWT）记进调用者的凭据，
- * 发起的树记下这个调用者（Ctx.caller，见 stdlib/infra/callers.ts）。请求与响应都是 JSON：
+ * 发起的树记下这个调用者（Ctx.caller，见 stdlib/infra/callers.ts）。谁能调哪个 Operation 由前面的网关校验，这里不查；
+ * 但每个调用者只看得到自己的树：runs、parks、回答问题与事件流都按调用者分开（没带令牌的算一个，只看没有调用者的树）。
+ * 请求与响应都是 JSON：
  * - GET  /operations        对外的 Operation：名字、说明、入参与出参的 JSON Schema
  * - POST /operations/:name  调用，请求体是入参（空即 {}）。等到结束，返回 { runId, result } 并取走结果；
  *                           等的途中断开，树照常跑完，结果留着，之后按 runId 取。带 ?async 立即返回 202 { runId }
- * - GET  /runs              结果还没被取走的树：{ runId, operation, origin, done }
+ * - GET  /runs              结果还没被取走的树：{ runId, operation, origin, caller, done }
  * - GET  /runs/:id          等这棵树结束并取走结果：{ runId, result }；等的途中断开不取
- * - GET  /parks             等待中的问题：{ id, root, operation, schema, payload }
+ * - GET  /parks             等待中的问题：{ id, root, operation, schema, payload, caller }
  * - POST /parks/:id         回答 { value }，或撤回 { withdraw: 原因 }
  * - GET  /events            事件流（SSE），每条 data 是一个事件；只推连上之后的，现状用 /runs 与 /parks 取。
  *                           没有事件时每隔几秒发一行注释，免得被当成空闲连接断开
@@ -30,16 +32,21 @@ export type HttpConfig = { socket?: string; port?: number; hostname?: string; ex
 
 const encoder = new TextEncoder();
 
+/** 连着的事件流 → 它的调用者 */
+type Streams = Map<ReadableStreamDefaultController<Uint8Array>, string | undefined>;
+
 export async function httpService(config: HttpConfig): Promise<Service> {
   const { socket, port, hostname = "127.0.0.1" } = config;
   const expose = new Set(config.expose);
   if ((socket === undefined) === (port === undefined)) throw new Error("serve.http needs exactly one of socket and port");
   if (socket) await claim(socket);
   let server: ReturnType<typeof Bun.serve> | undefined;
-  /** 连着的事件流 */
-  const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
-  const broadcast = (chunk: Uint8Array) => {
-    for (const stream of streams) {
+  /** 连着的事件流，各自的调用者 */
+  const streams: Streams = new Map();
+  /** 推给 to 认可的调用者的事件流 */
+  const send = (chunk: Uint8Array, to: (caller: string | undefined) => boolean) => {
+    for (const [stream, caller] of streams) {
+      if (!to(caller)) continue;
       try {
         stream.enqueue(chunk);
       } catch {
@@ -60,9 +67,10 @@ export async function httpService(config: HttpConfig): Promise<Service> {
         if (!outside) outsides.set(origin, (outside = ctx.outside(origin)));
         return outside;
       };
-      ctx.subscribe((event: HarnessEvent) => broadcast(encoder.encode(`data: ${JSON.stringify(event)}\n\n`)));
+      // 只推给这棵树的调用者
+      ctx.subscribe((event: HarnessEvent) => send(encoder.encode(`data: ${JSON.stringify(event)}\n\n`), (caller) => caller === event.caller));
       // 事件流可能很久没有事件，Bun 会当它空闲断开（缺省 10 秒，Unix socket 上也是）：隔几秒发一行注释
-      heartbeat = setInterval(() => broadcast(encoder.encode(": \n\n")), 5_000);
+      heartbeat = setInterval(() => send(encoder.encode(": \n\n"), () => true), 5_000);
       const callerOf = (req: Request) => {
         const token = req.headers.get("authorization")?.match(/^Bearer (.+)$/)?.[1];
         return token && config.callers?.put(token);
@@ -76,7 +84,7 @@ export async function httpService(config: HttpConfig): Promise<Service> {
       server?.stop(closeConnections);
       if (!closeConnections) return;
       clearInterval(heartbeat);
-      for (const stream of streams) stream.close();
+      for (const stream of streams.keys()) stream.close();
       streams.clear();
       if (socket) rmSync(socket, { force: true });
     },
@@ -100,8 +108,11 @@ async function route(
   outside: Outside,
   caller: string | undefined,
   expose: Set<string>,
-  streams: Set<ReadableStreamDefaultController<Uint8Array>>,
+  streams: Streams,
 ): Promise<Response> {
+  // 每个调用者只看得到自己的树
+  const runs = () => outside.runs().filter((r) => r.caller === caller);
+  const parks = () => outside.parks().filter((p) => p.caller === caller);
   const { pathname, searchParams } = new URL(req.url);
   const [resource = "", id, ...rest] = pathname.split("/").filter(Boolean).map(decodeURIComponent);
   const at = `${req.method} /${resource}${id === undefined ? "" : "/:id"}`;
@@ -117,13 +128,14 @@ async function route(
         return await deliver(outside, runId, req.signal);
       }
       case "GET /runs":
-        return json(outside.runs());
+        return json(runs());
       case "GET /runs/:id":
-        if (!outside.runs().some((r) => r.runId === id)) return error(404, `unknown run: ${id}`);
+        if (!runs().some((r) => r.runId === id)) return error(404, `unknown run: ${id}`);
         return await deliver(outside, id!, req.signal);
       case "GET /parks":
-        return json(outside.parks());
+        return json(parks());
       case "POST /parks/:id": {
+        if (!parks().some((p) => p.id === id)) return error(400, `not parked: ${id}`);
         const answer = (await body(req)) as { value?: unknown; withdraw?: unknown };
         if (typeof answer.withdraw === "string") outside.withdraw(id!, answer.withdraw);
         else if ("value" in answer) outside.unpark(id!, answer.value);
@@ -131,7 +143,7 @@ async function route(
         return json({ ok: true });
       }
       case "GET /events":
-        return events(streams);
+        return events(streams, caller);
       default:
         return error(404, `no route: ${req.method} ${pathname}`);
     }
@@ -148,12 +160,12 @@ async function deliver(outside: Outside, runId: string, signal: AbortSignal): Pr
   return json({ runId, result: await outside.reap(runId) });
 }
 
-function events(streams: Set<ReadableStreamDefaultController<Uint8Array>>): Response {
+function events(streams: Streams, caller: string | undefined): Response {
   let controller: ReadableStreamDefaultController<Uint8Array>;
   const stream = new ReadableStream<Uint8Array>({
     start(c) {
       controller = c;
-      streams.add(c);
+      streams.set(c, caller);
       c.enqueue(encoder.encode(": connected\n\n"));
     },
     cancel() {

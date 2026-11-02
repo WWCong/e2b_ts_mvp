@@ -186,6 +186,61 @@ describe("HTTP 服务接口", () => {
     expect(await who()).toBe("没人");
   });
 
+  test("每个调用者只看得到自己的树：runs、parks、回答问题、事件流；没带令牌的只看没有调用者的", async () => {
+    const socket = join(await mkdtemp(join(tmpdir(), "http-")), "h.sock");
+    const kernel = new Kernel();
+    kernel.use("demo", {
+      operations: {
+        ask: op({ api: true, usage: "问", input: z.object({}), output: z.string(), impl: (ctx) => ctx.park({ schema: { type: "string" }, payload: "?" }) as Promise<string> }),
+      },
+    });
+    const service = await httpService({ socket, expose: ["demo_ask"], callers: callers() });
+    services.push(service);
+    await kernel.boot();
+    service.listen({ outside: (origin) => kernel.outside(origin), subscribe: (fn) => kernel.events.subscribe(fn) });
+    const token = (sub: string) => `e30.${Buffer.from(JSON.stringify({ sub })).toString("base64url")}.sig`;
+    const as = (sub?: string) => {
+      const headers: Record<string, string> = sub ? { authorization: `Bearer ${token(sub)}` } : {};
+      const request = (method: string, path: string, body?: unknown) =>
+        fetch(`http://harness${path}`, { unix: socket, method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      return { request, get: async (path: string) => (await request("GET", path)).json() };
+    };
+    const [alice, bob, nobody] = [as("alice"), as("bob"), as()];
+    // 各自开着事件流，最后看各自收到了什么
+    const streams = await Promise.all([alice, bob, nobody].map(async (who) => (await who.request("GET", "/events")).body!.getReader()));
+
+    const { runId } = (await (await alice.request("POST", "/operations/demo_ask?async", {})).json()) as { runId: string };
+    while ((await alice.get("/parks")).length === 0) await Bun.sleep(1);
+    expect(await alice.get("/runs")).toEqual([{ runId, operation: "demo_ask", origin: "http", caller: "alice", done: false }]);
+    for (const other of [bob, nobody]) {
+      expect(await other.get("/runs")).toEqual([]);
+      expect(await other.get("/parks")).toEqual([]);
+      expect(await (await other.request("POST", `/parks/${runId}`, { value: "替她答" })).json()).toEqual({ error: `not parked: ${runId}` });
+      expect((await other.request("GET", `/runs/${runId}`)).status).toBe(404);
+    }
+    expect(await (await alice.request("POST", `/parks/${runId}`, { value: "好" })).json()).toEqual({ ok: true });
+    expect(await alice.get(`/runs/${runId}`)).toEqual({ runId, result: { ok: true, value: "好" } });
+
+    const decoder = new TextDecoder();
+    const received = await Promise.all(
+      streams.map(async (reader) => {
+        let text = "";
+        // 读到 alice 那棵树被取走，或等一小会儿（别人的流里什么也没有）
+        const deadline = Date.now() + 200;
+        while (!text.includes('"run.reaped"') && Date.now() < deadline) {
+          const chunk = await Promise.race([reader.read(), Bun.sleep(20).then(() => undefined)]);
+          if (chunk?.value) text += decoder.decode(chunk.value);
+        }
+        await reader.cancel();
+        return text.split("\n\n").filter((b) => b.startsWith("data: ")).map((b) => JSON.parse(b.slice(6)) as { type: string; caller?: string });
+      }),
+    );
+    expect(received[0]!.map((e) => e.type)).toEqual(["run.started", "park.opened", "park.closed", "run.exited", "run.reaped"]);
+    expect(received[0]!.every((e) => e.caller === "alice")).toBe(true);
+    expect(received[1]).toEqual([]);
+    expect(received[2]).toEqual([]);
+  });
+
   test("socket 已有活着的服务：报错，不去动它；上次留下的死 socket 文件删掉再监听；关停完删掉 socket 文件", async () => {
     const { socket, service } = await setup();
     expect(httpService({ socket, expose: [] })).rejects.toThrow(`a harness is already serving on ${socket}`);

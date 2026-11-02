@@ -63,7 +63,7 @@ async function link(
   inner: () => Promise<Result>,
   events: EventStream,
 ): Promise<Result> {
-  const base = { runId: run.runId, operation: run.operation, decorator: dec.id };
+  const base = { runId: run.runId, operation: run.operation, decorator: dec.id, caller: run.caller };
   const entryInput = run.input;
   let innerResult: Promise<Result> | undefined;
 

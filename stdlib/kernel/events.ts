@@ -15,13 +15,16 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
 /** 日志里一条已完成的记录：runId 的第 seq 步 */
 export type Replayed = { runId: string; seq: number } & Recorded;
 
-export type EventBody =
+/**
+ * 一条事件的内容。caller：所在树的调用者（见 Ctx.caller），每条都带，没有调用者的树不带：
+ * 单看一条就知道是谁的事，服务接口据它只把调用者自己的树的事件推给他
+ */
+export type EventBody = (
   /**
    * input：调用方给的入参，原样（实现拿到的是按 schema 解析后的）；chain：这个 Run 的装饰器链序，从外到内；
    * step：它是父的第几步，即日志的序号（外部发起的根 Run 没有；spawn 起的根是发起方的第几步）；attempt：崩溃恢复后重新执行时才有，第几次执行；
    * artifact：根 Run 才有，装配的产物摘要；origin：根 Run 才有，这棵树是谁发起的（服务接口给的，如 http:console），宿主直接 submit 的没有；
-   * spawnedBy：spawn 起的根才有，发起它的 Run；skipDecorators：spawn 起的根才有，这棵树上不装载哪些包的装饰器；
-   * caller：根 Run 才有，这棵树的调用者（见 Ctx.caller）
+   * spawnedBy：spawn 起的根才有，发起它的 Run；skipDecorators：spawn 起的根才有，这棵树上不装载哪些包的装饰器
    */
   | {
       type: "run.started";
@@ -37,7 +40,6 @@ export type EventBody =
       origin?: string;
       spawnedBy?: string;
       skipDecorators?: string[];
-      caller?: string;
     }
   | { type: "run.exited"; runId: string; operation: string; result: Result }
   /** 被杀（自己或祖先被取消，或关停，或恢复失败）；之后这个 Run 不再有 run.exited。reason：cancelled、shutdown、diverged …，或根建不起来的原因 */
@@ -81,7 +83,8 @@ export type EventBody =
   | { type: "run.logged"; runId: string; operation: string; level: LogLevel; text: string }
   | ({ type: "decorator.rewrote"; phase: "input" | "result"; value: unknown } & Link)
   | ({ type: "decorator.rejected"; result: Rejected } & Link)
-  | ({ type: "decorator.failed"; onError: OnError; error: string } & Link);
+  | ({ type: "decorator.failed"; onError: OnError; error: string } & Link)
+) & { caller?: string };
 
 /**
  * boot：这次启动的 id，按时间有序（UUIDv7），换了 boot 即重启过；seq：本次启动内单调的序号；ts：时间戳。

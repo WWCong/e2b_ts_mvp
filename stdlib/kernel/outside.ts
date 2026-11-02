@@ -6,11 +6,11 @@
 
 import type { Result } from "./run";
 
-/** 结果还没被取走的树：done 表示已结束、结果在等人取 */
-export type RunInfo = { runId: string; operation: string; origin?: string; done: boolean };
+/** 结果还没被取走的树：done 表示已结束、结果在等人取；caller 是它的调用者 */
+export type RunInfo = { runId: string; operation: string; origin?: string; caller?: string; done: boolean };
 
-/** 等待中的 park：id 是 park 的 runId（unpark 用它），root 是所在树的根；schema 是等的值的 JSON Schema */
-export type ParkInfo = { id: string; root: string; operation: string; schema: Record<string, unknown>; payload: unknown };
+/** 等待中的 park：id 是 park 的 runId（unpark 用它），root 是所在树的根；schema 是等的值的 JSON Schema；caller 是树的调用者 */
+export type ParkInfo = { id: string; root: string; operation: string; schema: Record<string, unknown>; payload: unknown; caller?: string };
 
 /** 能对外的 Operation：名字、说明、入参（调用方要填的形状）与出参的 JSON Schema */
 export type ApiInfo = { name: string; usage: string; input: Record<string, unknown>; output: Record<string, unknown> };
@@ -18,13 +18,13 @@ export type ApiInfo = { name: string; usage: string; input: Record<string, unkno
 export type Outside = {
   /** 按名字起一棵 Run 树，返回根的 runId；只能调声明了 api 的 Operation。caller 是这次请求的调用者（见 Ctx.caller） */
   submit(name: string, input: unknown, caller?: string): string;
-  /** 结果还没被取走的树（谁发起的都列）。后续：有了认证按调用方过滤 */
+  /** 结果还没被取走的树（谁的都列，服务接口按调用者筛） */
   runs(): RunInfo[];
   /** 等树结束，不取走结果 */
   wait(runId: string): Promise<Result>;
   /** 等树结束并取走结果；每棵树只能取一次，取走后不再保留 */
   reap(runId: string): Promise<Result>;
-  /** 等待中的 park（谁发起的树里的都列） */
+  /** 等待中的 park（谁的树里的都列，服务接口按调用者筛） */
   parks(): ParkInfo[];
   /** 把值送给等待中的 park，按它的 schema 校验；不在等待或值不符时抛异常 */
   unpark(id: string, value: unknown): void;
