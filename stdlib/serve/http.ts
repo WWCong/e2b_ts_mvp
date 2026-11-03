@@ -1,9 +1,12 @@
 /**
  * HTTP 服务接口（装配配置 serve.http）。只提供装配配置 expose 里列出的 Operation（都须声明了 api，宿主启动前查过）。
  * 请求头 harness-client 是调用方自报的名字，记进树的 origin（http:名字），客户端重连后据它认出自己发起的树；
- * 它只是个标签。配了 callers 时，请求带的 authorization: Bearer <令牌>（网关签发的 JWT）记进调用者的凭据，
- * 发起的树记下这个调用者（Ctx.caller，见 stdlib/infra/callers.ts）。谁能调哪个 Operation 由前面的网关校验，这里不查；
- * 但每个调用者只看得到自己的树：runs、parks、回答问题与事件流都按调用者分开（没带令牌的算一个，只看没有调用者的树）。
+ * 它只是个标签。调用者（Ctx.caller）从哪来：配了 callers 时，请求带的 authorization: Bearer <令牌>（网关签发的 JWT）
+ * 记进调用者的凭据，调用者是令牌认出的（见 stdlib/infra/callers.ts）；配了 callerHeader 时，是网关带来的这个请求头的值
+ * （请求头只能放 ASCII，值按 URI 编码，这里解码）。
+ * 谁能调哪个 Operation 由前面的网关校验，这里不查。visibility 缺省是 caller：每个调用者只看得到自己的树，runs、parks、
+ * 回答问题与事件流都按调用者分开（没有调用者的算一个）；all：谁都看得到所有的树（如 builder，会话对所有人公开）。
+ * 配了 files 时，不是下面这些路由的 GET 按路径前缀交给目录里的静态文件（网页、产物），目录是 index.html。
  * 请求与响应都是 JSON：
  * - GET  /operations        对外的 Operation：名字、说明、入参与出参的 JSON Schema
  * - POST /operations/:name  调用，请求体是入参（空即 {}）。等到结束，返回 { runId, result } 并取走结果；
@@ -20,15 +23,31 @@
  * 或放在把关的网关后面（如沙盒应用：沙盒在隔离的内网，进来的请求都经业务网关）。
  */
 
-import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
-import { dirname } from "node:path";
+import { chmodSync, existsSync, mkdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import { dirname, join, resolve, sep } from "node:path";
 import type { HarnessEvent } from "../kernel/events";
 import type { Outside } from "../kernel/outside";
 import type { Callers } from "../infra/callers";
 import type { Service } from "./service";
 
-/** socket 与 port 二选一；expose：对外的 Operation，不在里面的一律当作没有；callers：记下请求带的调用者令牌 */
-export type HttpConfig = { socket?: string; port?: number; hostname?: string; expose: string[]; callers?: Callers };
+/**
+ * socket 与 port 二选一；expose：对外的 Operation，不在里面的一律当作没有。
+ * callers：记下请求带的调用者令牌，或 callerHeader：网关带来的调用者的请求头；visibility：看得到谁的树，缺省 caller。
+ * files：路径前缀 → 目录，如 { "/": 网页的目录, "/tree/": 产物的目录 }
+ */
+export type HttpConfig = {
+  socket?: string;
+  port?: number;
+  hostname?: string;
+  expose: string[];
+  callers?: Callers;
+  callerHeader?: string;
+  visibility?: "caller" | "all";
+  files?: Record<string, string>;
+};
+
+/** 服务接口自己的路由的第一段：其余的 GET 才交给静态文件 */
+const ROUTES = new Set(["operations", "runs", "parks", "events"]);
 
 const encoder = new TextEncoder();
 
@@ -67,15 +86,22 @@ export async function httpService(config: HttpConfig): Promise<Service> {
         if (!outside) outsides.set(origin, (outside = ctx.outside(origin)));
         return outside;
       };
-      // 只推给这棵树的调用者
-      ctx.subscribe((event: HarnessEvent) => send(encoder.encode(`data: ${JSON.stringify(event)}\n\n`), (caller) => caller === event.caller));
+      const all = config.visibility === "all";
+      // 只推给这棵树的调用者（看得到所有的树时推给所有人）
+      ctx.subscribe((event: HarnessEvent) => send(encoder.encode(`data: ${JSON.stringify(event)}\n\n`), (caller) => all || caller === event.caller));
       // 事件流可能很久没有事件，Bun 会当它空闲断开（缺省 10 秒，Unix socket 上也是）：隔几秒发一行注释
       heartbeat = setInterval(() => send(encoder.encode(": \n\n"), () => true), 5_000);
       const callerOf = (req: Request) => {
+        if (config.callerHeader) return decode(req.headers.get(config.callerHeader)?.trim() ?? "") || undefined;
         const token = req.headers.get("authorization")?.match(/^Bearer (.+)$/)?.[1];
-        return token && config.callers?.put(token);
+        return (token && config.callers?.put(token)) || undefined;
       };
-      const fetch = (req: Request) => route(req, outsideOf(req), callerOf(req) || undefined, expose, streams);
+      const files = config.files && staticFiles(config.files);
+      const fetch = (req: Request) => {
+        const first = new URL(req.url).pathname.split("/")[1] ?? "";
+        if (files && !ROUTES.has(first) && (req.method === "GET" || req.method === "HEAD")) return files(req);
+        return route(req, outsideOf(req), callerOf(req), all, expose, streams);
+      };
       // 等结果的请求也可能很久不说话：TCP 关掉空闲超时
       server = socket ? Bun.serve({ unix: socket, fetch }) : Bun.serve({ port, hostname, idleTimeout: 0, fetch });
       if (socket) chmodSync(socket, 0o600);
@@ -107,12 +133,13 @@ async function route(
   req: Request,
   outside: Outside,
   caller: string | undefined,
+  all: boolean,
   expose: Set<string>,
   streams: Streams,
 ): Promise<Response> {
-  // 每个调用者只看得到自己的树
-  const runs = () => outside.runs().filter((r) => r.caller === caller);
-  const parks = () => outside.parks().filter((p) => p.caller === caller);
+  // 每个调用者只看得到自己的树（看得到所有的树时不筛）
+  const runs = () => outside.runs().filter((r) => all || r.caller === caller);
+  const parks = () => outside.parks().filter((p) => all || p.caller === caller);
   const { pathname, searchParams } = new URL(req.url);
   const [resource = "", id, ...rest] = pathname.split("/").filter(Boolean).map(decodeURIComponent);
   const at = `${req.method} /${resource}${id === undefined ? "" : "/:id"}`;
@@ -152,6 +179,30 @@ async function route(
   }
 }
 
+/**
+ * 静态文件：按最长的路径前缀找到目录，交出里面的文件（类型按扩展名），目录交它的 index.html。
+ * 只认目录里的：按解开符号链接后的真实路径查，越出目录的与没有的都是 404
+ */
+function staticFiles(mounts: Record<string, string>): (req: Request) => Response {
+  const prefixes = Object.keys(mounts).sort((a, b) => b.length - a.length);
+  return (req) => {
+    const pathname = decodeURIComponent(new URL(req.url).pathname);
+    const prefix = prefixes.find((p) => pathname.startsWith(p));
+    if (prefix === undefined) return error(404, `no route: ${req.method} ${pathname}`);
+    const root = realpathSync(mounts[prefix]!);
+    let path = resolve(root, `.${sep}${pathname.slice(prefix.length)}`);
+    try {
+      if (statSync(path).isDirectory()) path = join(path, "index.html");
+      path = realpathSync(path);
+    } catch {
+      return error(404, `no such file: ${pathname}`);
+    }
+    if (path !== root && !path.startsWith(root + sep)) return error(404, `no such file: ${pathname}`);
+    if (!statSync(path).isFile()) return error(404, `no such file: ${pathname}`);
+    return new Response(Bun.file(path), { headers: { "cache-control": "no-cache" } });
+  };
+}
+
 /** 等树结束，取走结果交给调用方；调用方等的途中断开就不取，结果留着 */
 async function deliver(outside: Outside, runId: string, signal: AbortSignal): Promise<Response> {
   const gone = new Promise<undefined>((resolve) => signal.addEventListener("abort", () => resolve(undefined), { once: true }));
@@ -173,6 +224,15 @@ function events(streams: Streams, caller: string | undefined): Response {
     },
   });
   return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } });
+}
+
+/** URI 编码的值解码；不是编码过的（含不成对的 %）原样用 */
+function decode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 /** 请求体：JSON，空即 {} */

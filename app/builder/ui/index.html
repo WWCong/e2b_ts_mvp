@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>builder</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/vendor/marked/marked.umd.js"></script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header>
+    <span class="brand">builder</span>
+    <span class="where" id="where"></span>
+    <button class="me" id="me" title="换名字"></button>
+  </header>
+  <main>
+    <nav id="tree" aria-label="树"></nav>
+    <section id="view" aria-label="产物"></section>
+    <aside id="chat" aria-label="聊天">
+      <div class="chat-head" id="chat-head"></div>
+      <ol class="messages" id="messages"></ol>
+      <form id="say">
+        <textarea id="text" rows="3" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <button type="submit">发送</button>
+      </form>
+    </aside>
+  </main>
+</body>
+</html>

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -239,6 +239,61 @@ describe("HTTP 服务接口", () => {
     expect(received[0]!.every((e) => e.caller === "alice")).toBe(true);
     expect(received[1]).toEqual([]);
     expect(received[2]).toEqual([]);
+  });
+
+  test("静态文件：按路径前缀交出目录里的文件，目录交 index.html；越出目录的、没有的是 404；服务接口自己的路由照旧", async () => {
+    const base = await mkdtemp(join(tmpdir(), "http-files-"));
+    const [ui, tree, outside] = ["ui", "tree", "outside"].map((d) => join(base, d)) as [string, string, string];
+    for (const d of [ui, tree, outside]) mkdirSync(d);
+    writeFileSync(join(ui, "index.html"), "<h1>首页</h1>");
+    writeFileSync(join(tree, "prd.md"), "# PRD");
+    writeFileSync(join(outside, "secret.txt"), "机密");
+    symlinkSync(outside, join(tree, "link"));
+    const socket = join(base, "h.sock");
+    const kernel = new Kernel();
+    kernel.use("demo", { operations: { echo: op({ api: true, usage: "回显", input: z.object({}), output: z.string(), impl: async () => "hi" }) } });
+    const service = await httpService({ socket, expose: ["demo_echo"], files: { "/": ui, "/tree/": tree } });
+    services.push(service);
+    await kernel.boot();
+    service.listen({ outside: (origin) => kernel.outside(origin), subscribe: (fn) => kernel.events.subscribe(fn) });
+    const get = (path: string) => fetch(`http://harness${path}`, { unix: socket });
+
+    expect(await (await get("/")).text()).toBe("<h1>首页</h1>");
+    const md = await get("/tree/prd.md");
+    expect([md.status, await md.text()]).toEqual([200, "# PRD"]);
+    for (const path of ["/tree/link/secret.txt", "/tree/nope.md", "/tree/", "/nope.html"]) expect((await get(path)).status).toBe(404);
+    expect((await (await get("/operations")).json()) as unknown[]).toHaveLength(1);
+  });
+
+  test("callerHeader：调用者是网关带来的请求头；visibility all：谁都看得到所有的树与事件", async () => {
+    const socket = join(await mkdtemp(join(tmpdir(), "http-")), "h.sock");
+    const kernel = new Kernel();
+    kernel.use("demo", {
+      operations: {
+        ask: op({ api: true, usage: "问", input: z.object({}), output: z.string(), impl: async (ctx) => `${ctx.caller}: ${await ctx.park({ schema: { type: "string" }, payload: "?" })}` }),
+      },
+    });
+    const service = await httpService({ socket, expose: ["demo_ask"], callerHeader: "x-user", visibility: "all" });
+    services.push(service);
+    await kernel.boot();
+    service.listen({ outside: (origin) => kernel.outside(origin), subscribe: (fn) => kernel.events.subscribe(fn) });
+    const as = (user: string) => (method: string, path: string, body?: unknown) =>
+      fetch(`http://harness${path}`, { unix: socket, method, headers: { "x-user": user }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const [alice, bob] = [as("alice"), as("bob")];
+    const reader = (await bob("GET", "/events")).body!.getReader();
+
+    const { runId } = (await (await alice("POST", "/operations/demo_ask?async", {})).json()) as { runId: string };
+    while (((await (await bob("GET", "/parks")).json()) as ParkInfo[]).length === 0) await Bun.sleep(1);
+    expect(await (await bob("POST", `/parks/${runId}`, { value: "替她答" })).json()).toEqual({ ok: true });
+    expect(await (await bob("GET", `/runs/${runId}`)).json()).toEqual({ runId, result: { ok: true, value: "alice: 替她答" } });
+
+    let text = "";
+    while (!text.includes('"run.reaped"')) text += new TextDecoder().decode((await reader.read()).value);
+    await reader.cancel();
+    expect(text).toContain('"caller":"alice"');
+    // 请求头只能放 ASCII：非 ASCII 的名字按 URI 编码带来
+    const named = (await (await as(encodeURIComponent("张三"))("POST", "/operations/demo_ask?async", {})).json()) as { runId: string };
+    expect((await (await bob("GET", "/runs")).json()) as unknown[]).toContainEqual(expect.objectContaining({ runId: named.runId, caller: "张三" }));
   });
 
   test("socket 已有活着的服务：报错，不去动它；上次留下的死 socket 文件删掉再监听；关停完删掉 socket 文件", async () => {

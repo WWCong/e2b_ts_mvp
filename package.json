@@ -6,8 +6,9 @@
     "start": "bun app/mvp/start.ts",
     "serve": "bun app/mvp/server/main.ts",
     "chat": "bun app/mvp/client/main.ts",
+    "builder": "bun app/builder/server/main.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p app/mvp"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p app/mvp && tsc --noEmit -p app/builder"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",
@@ -16,6 +17,7 @@
   "dependencies": {
     "@earendil-works/pi-ai": "^1.2.0",
     "@earendil-works/pi-coding-agent": "1.2.0",
+    "marked": "15.0.12",
     "quickjs-wasi": "3.6.2",
     "zod": "^4.6.5"
   }
